@@ -1,0 +1,79 @@
+# 字节编译/优化/DLL文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 发行版/打包
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 单元测试/覆盖率报告
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 环境
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyCharm、VS Code等IDE设置
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 项目特定的忽略
+# 音频文件
+*.mp3
+*.mp4
+*.webm
+*.wav
+*.flac
+*.m4a
+*.aac
+*.ogg
+
+# 处理中生成的目录
+*/audio_chunks/
+*/intermediate_transcripts/
+
+# 生成的字幕文件 (可选，取决于是否要包含在版本控制中)
+*.srt
+
+# 存储API密钥的文件
+api_key.txt
+secret.json
+credentials.json
+
+# 操作系统生成的文件
+.DS_Store
+Thumbs.db
