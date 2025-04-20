@@ -6,11 +6,14 @@
 
 - **视频处理**：自动从视频文件中提取音频
 - **智能音频切分**：根据静音点自动将长音频文件切分为较小的片段
-- **音频转录与翻译**：使用 Google Gemini AI 将音频转录为文本并翻译成中文
+- **音频转录与翻译**：使用 Google Gemini AI 将音频转录为文本并翻译成多种语言
+- **多语言支持**：支持将音频内容翻译成简体中文、繁体中文、英语、日语、韩语等多种语言
+- **多语言界面**：支持中文和英文界面，可随时切换
 - **字幕时间戳生成**：自动为转录和翻译内容添加精确的时间戳
 - **SRT 字幕生成**：将所有转录片段合并，生成标准 SRT 格式字幕文件
 - **图形用户界面**：提供直观的界面，简化处理流程
 - **灵活的输出选项**：支持仅转录、仅翻译或两者都包含的字幕文件
+- **处理中断功能**：支持随时强制终止正在进行的处理任务
 
 ## 系统要求
 
@@ -26,7 +29,7 @@
 2. 安装必要的 Python 依赖：
 
 ```bash
-pip install pydub librosa soundfile google-generativeai numpy mutagen
+pip install pydub librosa soundfile google-generativeai numpy psutil mutagen
 ```
 
 3. 确保系统中已安装 FFmpeg (用于视频处理)：
@@ -57,10 +60,12 @@ python audio_processor_gui.py
 ```
 
 2. 在界面上：
+   - 选择界面语言（中文或英文）
    - 选择输入文件（音频或视频）
    - 输入 Google AI API 密钥
    - 调整处理参数（如需要）
    - 点击「开始处理」
+   - 如需中断处理，点击「停止处理」按钮可强制终止所有处理进程
 
 ### 命令行版本
 
@@ -77,6 +82,12 @@ python process_audio.py 录音.mp3 --api-key YOUR_API_KEY
 # 处理视频并包含转录和翻译
 python process_audio.py 视频.mp4 --api-key YOUR_API_KEY --content both
 
+# 使用不同的目标语言（翻译成英语）
+python process_audio.py 中文演讲.mp3 --api-key YOUR_API_KEY --target-language "English"
+
+# 使用日语作为目标语言
+python process_audio.py 演讲.mp3 --api-key YOUR_API_KEY --target-language "Japanese"
+
 # 调整音频切分参数
 python process_audio.py 长音频.mp3 --api-key YOUR_API_KEY --max-length 240 --silence-length 700 --silence-threshold -45
 
@@ -88,6 +99,7 @@ python process_audio.py 演讲.mp3 --api-key YOUR_API_KEY --output-dir ./输出�
 
 - `--api-key`：Google AI API 密钥 (**必需**)
 - `--output-dir`：输出目录 (默认使用输入文件名创建目录)
+- `--target-language`：翻译的目标语言 (默认为"Simplified Chinese"，可选：Traditional Chinese、English、Japanese、Korean 等)
 - `--content`：选择字幕内容类型
   - `transcript`：仅包含转录
   - `translation`：仅包含翻译
@@ -143,12 +155,54 @@ python process_audio.py 演讲.mp3 --api-key YOUR_API_KEY --output-dir ./输出�
    - 如果生成的字幕与视频不同步，可以使用 `--first-chunk-offset` 参数调整
 
 3. **如何处理不同语言的音频？**
-   - 系统会自动检测音频语言并转录，然后翻译为中文
+   - 系统会自动检测音频语言并转录，然后翻译为指定的目标语言
+   - 默认翻译为简体中文，但可以通过 `--target-language` 参数更改
 
-4. **FFmpeg 安装问题？**
+4. **支持哪些目标语言？**
+   - 支持多种语言，包括：简体中文、繁体中文、英语、日语、韩语、俄语、西班牙语、法语、德语等
+   - 在GUI界面中可以从下拉菜单选择，命令行中可以通过参数指定
+
+5. **FFmpeg 安装问题？**
    - 确保 FFmpeg 正确安装并添加到系统 PATH 中
    - 可以通过命令行运行 `ffmpeg -version` 验证安装
 
+6. **如何停止正在进行的处理？**
+   - 在GUI界面中，点击「停止处理」按钮
+   - 程序会强制终止所有相关的处理进程
+   - 注意：强制停止会丢失当前的处理进度
+
 ## 许可证
 
-[添加您的许可证信息]
+MIT License
+
+Copyright (c) 2025 
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## 贡献指南
+
+欢迎对本项目进行贡献！如果您想参与开发，可以按照以下步骤：
+
+1. Fork 本仓库
+2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启一个 Pull Request
+
+如果发现任何 bug 或有任何改进建议，也欢迎提交 issue。

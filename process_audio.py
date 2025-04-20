@@ -132,6 +132,7 @@ def run_pipeline(params, progress_queue=None):
     silence_length = params.get('silence_length', 500)  # 默认500毫秒
     silence_threshold = params.get('silence_threshold', -40)  # 默认-40dB
     cleanup = params.get('cleanup', False)
+    target_language = params.get('target_language', 'Simplified Chinese')  # 默认简体中文
     
     # 验证必要参数
     if not input_file or not os.path.isfile(input_file):
@@ -231,18 +232,23 @@ def run_pipeline(params, progress_queue=None):
         return False
     
     # 2. 转录音频
-    start_msg = f"\n--- 步骤 2: 转录音频片段 ---"
+    start_msg = f"\n--- 步骤 2: 转录音频片段 (目标语言: {target_language}) ---"
     if progress_queue:
         progress_queue.put(start_msg)
     print(start_msg)
     
     step2_start = time.time()
     try:
-        # 调用transcript.py中的run_transcription函数
+        # 使用目标语言生成系统指令
+        from transcript import get_system_instruction
+        custom_system_instruction = get_system_instruction(target_language)
+        
+        # 调用transcript.py中的run_transcription函数，传入自定义的system_instruction
         transcription_success = run_transcription(
             api_key=api_key,
             audio_dir=audio_chunk_dir,
             intermediate_dir=intermediate_dir,
+            system_instruction=custom_system_instruction,
             progress_queue=progress_queue
         )
         
@@ -353,6 +359,10 @@ def main():
     parser.add_argument("input_file", help="输入的音频或视频文件路径")
     parser.add_argument("--api-key", required=True, help="Google AI API密钥")
     parser.add_argument("--output-dir", help="指定输出目录 (默认使用输入文件名创建同名目录)")
+    
+    # 翻译选项
+    parser.add_argument("--target-language", default="Simplified Chinese",
+                      help="翻译的目标语言 (默认: Simplified Chinese，可选: Traditional Chinese, English, Japanese, Korean, 等)")
     
     # 内容选项
     parser.add_argument("--content", choices=['transcript', 'translation', 'both'], default='both',

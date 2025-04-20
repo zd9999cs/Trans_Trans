@@ -11,10 +11,11 @@ INTERMEDIATE_DIR = "intermediate_transcripts" # 默认中间转录文件目录
 # -------------
 
 # --- 系统指令 ---
-# 将固定的指令放在这里
-SYSTEM_INSTRUCTION = """You are a transcription and translation service. Your task is to process the audio file provided in the content.
+# 将固定的指令放在这里，但把目标语言作为参数
+def get_system_instruction(target_language="Simplified Chinese"):
+    return f"""You are a transcription and translation service. Your task is to process the audio file provided in the content.
 First, provide the complete transcript in language used by audio.
-Second, provide a fluent Simplified Chinese translation of the entire transcript.
+Second, provide a fluent {target_language} translation of the entire transcript.
 Third, Provide transcript with inserted timestamps in the format [mm:ss.msmsms] at the beginning of each sentence. Crucially, ensure timestamps accurately reflect the start time of each sentence, accounting for any initial silence in the audio. The first timestamp must correspond to the actual start time of the first utterance, even if there is silence before it.
 Fourth, Provide translation with inserted timestamps in the format [mm:ss.msmsms] at the beginning of each sentence, mirroring the timing of the timestamped transcript and accounting for initial silence.
 
@@ -23,7 +24,7 @@ Transcript:
 [Transcript text]
 
 Translation:
-[Simplified Chinese translation text]
+[{target_language} translation text]
 
 Timestamped Transcript:
 [Timestamped transcript text]
@@ -32,7 +33,9 @@ Timestamped Translation:
 [Timestamped translation text]
 
 """
-# -------------
+
+# 默认的系统指令使用简体中文
+SYSTEM_INSTRUCTION = get_system_instruction()
 
 def initialize_genai_client(api_key):
     """初始化GenAI客户端"""
@@ -42,7 +45,7 @@ def initialize_genai_client(api_key):
         print(f"初始化 GenAI 客户端时出错: {e}")
         return None
 
-def process_audio_file(filepath, client, intermediate_dir):
+def process_audio_file(filepath, client, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION):
     """处理单个音频文件：上传、转录、删除，并保存中间转录文件。"""
     filename = os.path.basename(filepath)
     transcript_filename = pathlib.Path(filename).stem + ".txt"
@@ -63,7 +66,7 @@ def process_audio_file(filepath, client, intermediate_dir):
         response = client.models.generate_content(
             model="gemini-2.5-pro-preview-03-25", # 确认模型支持 system_instruction
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION, # 使用系统指令
+                system_instruction=system_instruction, # 使用传入的系统指令
             ),
             contents=[uploaded_file] # contents 只包含文件
         )
@@ -163,7 +166,7 @@ def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=S
         status_msg = f"处理文件 {i+1}/{len(audio_files)}: {os.path.basename(audio_file_path)}"
         if progress_queue:
             progress_queue.put(status_msg)
-        result = process_audio_file(audio_file_path, client, intermediate_dir)
+        result = process_audio_file(audio_file_path, client, intermediate_dir, system_instruction)
         results.append(result)
 
     end_time = time.time()
@@ -182,7 +185,12 @@ if __name__ == "__main__":
     parser.add_argument("--api-key", required=True, help="Google AI API密钥")
     parser.add_argument("--audio-dir", default=AUDIO_DIR, help=f"音频文件目录 (默认: {AUDIO_DIR})")
     parser.add_argument("--intermediate-dir", default=INTERMEDIATE_DIR, help=f"中间转录文件目录 (默认: {INTERMEDIATE_DIR})")
+    parser.add_argument("--target-language", default="Simplified Chinese", 
+                      help="翻译的目标语言 (默认: Simplified Chinese，可选: Traditional Chinese, English, Japanese, Korean, 等)")
     
     args = parser.parse_args()
     
-    run_transcription(args.api_key, args.audio_dir, args.intermediate_dir)
+    # 根据目标语言生成系统指令
+    system_instruction = get_system_instruction(args.target_language)
+    
+    run_transcription(args.api_key, args.audio_dir, args.intermediate_dir, system_instruction)
