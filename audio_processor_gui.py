@@ -21,6 +21,11 @@ except ImportError as e:
     print(f"错误：无法导入process_audio.py模块。确保该文件在同一目录下。详细错误: {e}")
     sys.exit(1)
 
+# 确保多进程在Windows下正常工作
+if __name__ == "__main__":
+    # 设置多进程启动方法为spawn (在Windows上更稳定)
+    multiprocessing.set_start_method('spawn', force=True)
+
 # 定义翻译字典
 translations = {
     "zh_CN": {  # 简体中文
@@ -517,7 +522,6 @@ class AudioProcessorGUI(tk.Tk):
                 # 从队列中获取消息
                 message = self.progress_queue.get_nowait()
                 self.add_progress(message)
-                self.progress_queue.task_done()
         except queue.Empty:
             pass
         
