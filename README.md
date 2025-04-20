@@ -208,3 +208,7 @@ Contributions to this project are welcome! If you'd like to participate in devel
 5. Open a Pull Request
 
 If you find any bugs or have any suggestions for improvements, please feel free to submit an issue.
+
+## TODO
+
+- [] Improve recognition when there are multiple people speaking.
