@@ -111,14 +111,15 @@ def convert_video_to_mp3(video_path, output_dir=None, progress_queue=None):
         print(error_msg)
         return None
 
-def run_pipeline(params, progress_queue=None):
+def run_pipeline(params, progress_queue=None, control_queue=None):
     """
     运行完整的处理流程：(视频转MP3) -> 切分音频 -> 转录音频 -> 合并转录生成SRT
     
     Args:
         params (dict): 包含所有处理参数的字典
         progress_queue (Queue, optional): 用于报告进度的队列对象
-    
+        control_queue (Queue, optional): 用于从GUI接收控制信号的队列对象，用于处理用户干预情况
+
     Returns:
         bool: 操作是否成功
     """
@@ -278,35 +279,98 @@ def run_pipeline(params, progress_queue=None):
     print(start_msg)
     
     step3_start = time.time()
-    try:
-        # 调用combine_transcripts.py中的generate_srt函数
-        srt_success = generate_srt(
-            transcript_dir=intermediate_dir,
-            audio_dir=audio_chunk_dir,
-            output_srt_file=srt_file,
-            content_choice=content,
-            first_chunk_offset=first_chunk_offset,
-            progress_queue=progress_queue
-        )
-        
-        if not srt_success:
-            error_msg = "错误：SRT字幕生成失败。"
+    
+    # 添加合并重试循环
+    while True:
+        try:
+            # 调用combine_transcripts.py中的generate_srt函数
+            srt_result = generate_srt(
+                transcript_dir=intermediate_dir,
+                audio_dir=audio_chunk_dir,
+                output_srt_file=srt_file,
+                content_choice=content,
+                first_chunk_offset=first_chunk_offset,
+                progress_queue=progress_queue
+            )
+            
+            # 处理不同的返回值
+            if srt_result == True:  # 成功完成
+                step3_end = time.time()
+                success_msg = f"SRT字幕生成完成。耗时: {step3_end - step3_start:.2f}秒"
+                if progress_queue:
+                    progress_queue.put(success_msg)
+                print(success_msg)
+                break  # 退出重试循环
+            
+            elif srt_result == 'PARSE_ERROR':  # 需要用户干预
+                warning_msg = "检测到时间戳解析错误，需要用户修正后重试。"
+                if progress_queue:
+                    progress_queue.put(warning_msg)
+                print(warning_msg)
+                
+                if control_queue:  # 如果有控制队列，等待用户通知
+                    wait_msg = "等待用户修改文件。修改完成后，请在界面上点击'重试合并'按钮。"
+                    if progress_queue:
+                        progress_queue.put(wait_msg)
+                    print(wait_msg)
+                    
+                    try:
+                        # 阻塞等待用户操作
+                        retry_signal = control_queue.get(block=True)
+                        
+                        # 处理不同的控制信号
+                        if retry_signal == 'RETRY_COMBINE':
+                            retry_msg = "收到重试信号，继续合并转录..."
+                            if progress_queue:
+                                progress_queue.put(retry_msg)
+                            print(retry_msg)
+                            # 继续循环，重新尝试 generate_srt
+                            continue
+                        elif retry_signal == 'STOP_PROCESSING':
+                            stop_msg = "收到停止信号，终止处理。"
+                            if progress_queue:
+                                progress_queue.put(stop_msg)
+                            print(stop_msg)
+                            return False
+                        else:
+                            error_msg = f"接收到未知控制信号: {retry_signal}，终止处理。"
+                            if progress_queue:
+                                progress_queue.put(error_msg)
+                            print(error_msg)
+                            return False
+                    except Exception as e:
+                        error_msg = f"等待用户操作时发生错误: {e}"
+                        if progress_queue:
+                            progress_queue.put(error_msg)
+                        print(error_msg)
+                        return False
+                else:  # 命令行模式，没有控制队列
+                    error_msg = "检测到时间戳解析错误，但在命令行模式下无法等待用户修正。请手动修复后重新运行程序。"
+                    if progress_queue:
+                        progress_queue.put(error_msg)
+                    print(error_msg)
+                    return False
+            
+            elif srt_result == False:  # 其他失败
+                error_msg = "错误：SRT字幕生成失败。"
+                if progress_queue:
+                    progress_queue.put(error_msg)
+                print(error_msg)
+                return False
+            
+            else:  # 未知返回值
+                error_msg = f"错误：生成SRT时收到未知返回值: {srt_result}"
+                if progress_queue:
+                    progress_queue.put(error_msg)
+                print(error_msg)
+                return False
+                
+        except Exception as e:
+            error_msg = f"SRT字幕生成过程中发生错误: {e}"
             if progress_queue:
                 progress_queue.put(error_msg)
             print(error_msg)
             return False
-            
-        step3_end = time.time()
-        success_msg = f"SRT字幕生成完成。耗时: {step3_end - step3_start:.2f}秒"
-        if progress_queue:
-            progress_queue.put(success_msg)
-        print(success_msg)
-    except Exception as e:
-        error_msg = f"SRT字幕生成过程中发生错误: {e}"
-        if progress_queue:
-            progress_queue.put(error_msg)
-        print(error_msg)
-        return False
     
     # 清理中间文件（如果需要）
     if cleanup:

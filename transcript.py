@@ -16,8 +16,8 @@ def get_system_instruction(target_language="Simplified Chinese"):
     return f"""You are a transcription and translation service. Your task is to process the audio file provided in the content.
 First, provide the complete transcript in language used by audio.
 Second, provide a fluent {target_language} translation of the entire transcript.
-Third, Provide transcript with inserted timestamps in the format [mm:ss.msmsms] at the beginning of each sentence. Crucially, ensure timestamps accurately reflect the start time of each sentence, accounting for any initial silence in the audio. The first timestamp must correspond to the actual start time of the first utterance, even if there is silence before it.
-Fourth, Provide translation with inserted timestamps in the format [mm:ss.msmsms] at the beginning of each sentence, mirroring the timing of the timestamped transcript and accounting for initial silence.
+Third, Provide transcript with inserted timestamps. Timestamps MUST be in the format [mm:ss.msmsms] (minutes:seconds.milliseconds) at the beginning of each sentence. For example: [00:22.949]. Crucially, ensure timestamps accurately reflect the start time of each sentence, accounting for any initial silence in the audio. The first timestamp must correspond to the actual start time of the first utterance, even if there is silence before it. DO NOT use formats like '[ 4m33s271ms ]'.
+Fourth, Provide translation with inserted timestamps. Timestamps MUST be in the format [mm:ss.msmsms] at the beginning of each sentence, mirroring the timing of the timestamped transcript and accounting for initial silence. For example: [00:22.949]. DO NOT use formats like '[ 4m33s271ms ]'.
 
 Output format MUST be:
 Transcript:

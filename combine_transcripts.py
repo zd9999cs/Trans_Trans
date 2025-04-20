@@ -2,6 +2,7 @@ import os
 import re
 import datetime
 import pathlib
+import sys
 import argparse # Import argparse
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -41,72 +42,115 @@ def get_audio_duration(filepath):
         print(f"  错误：无法读取音频文件时长 {filepath}: {e}")
         return 0.0 # 或者引发错误
 
-def parse_timestamp(ts_str):
-    """将多种格式的时间戳字符串解析为 timedelta, 例如:
-       [hh:mm:ss.ms], [hh:mm:ss], [h:mm:ss.ms], [h:mm:ss],
-       [mm:ss.ms], [mm:ss], [mm:ss:ms]""" # 添加了 [mm:ss:ms]
-    ts_str = ts_str.strip() # 去除可能的前后空格
-
-    # 优先匹配最完整的格式 (允许 h, m, s 为 1 或 2 位数字)
-    match_full_ms = re.match(r'\[(\d{1,2}):(\d{1,2}):(\d{1,2})[.,](\d{1,3})\]', ts_str)
-    if match_full_ms:
-        h, m, s, ms = match_full_ms.groups()
-        ms = ms.ljust(3, '0')
-        try:
-            return datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s), milliseconds=int(ms))
-        except ValueError:
-             print(f"  警告：时间戳值无效 (可能超出范围): {ts_str}")
-             return None
-
-    # 匹配没有毫秒的完整格式 (允许 h, m, s 为 1 或 2 位数字)
-    match_full = re.match(r'\[(\d{1,2}):(\d{1,2}):(\d{1,2})\]', ts_str)
-    if match_full:
-        h, m, s = match_full.groups()
-        try:
-            return datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
-        except ValueError:
-             print(f"  警告：时间戳值无效 (可能超出范围): {ts_str}")
-             return None
-
-    # 匹配只有分钟和秒带毫秒的格式 (用 . 或 , 分隔)
-    match_ms_only_ms_dot = re.match(r'\[(\d{1,2}):(\d{1,2})[.,](\d{1,3})\]', ts_str)
-    if match_ms_only_ms_dot:
-        m, s, ms = match_ms_only_ms_dot.groups()
-        ms = ms.ljust(3, '0')
-        try:
-            return datetime.timedelta(hours=0, minutes=int(m), seconds=int(s), milliseconds=int(ms))
-        except ValueError:
-             print(f"  警告：时间戳值无效 (可能超出范围): {ts_str}")
-             return None
-
-    # 新增：匹配只有分钟和秒带毫秒的格式 (用 : 分隔) [mm:ss:ms]
-    match_ms_only_ms_colon = re.match(r'\[(\d{1,2}):(\d{1,2}):(\d{1,3})\]', ts_str)
-    if match_ms_only_ms_colon:
-        # 这个模式也可能匹配 hh:mm:ss，但由于之前的 hh:mm:ss 模式会先匹配，所以这里匹配到的应该是 mm:ss:ms
-        # 为了更明确，可以检查第一个数字是否小于 60，但暂时先这样处理
-        m, s, ms = match_ms_only_ms_colon.groups()
-        ms = ms.ljust(3, '0')
-        try:
-            # 假设小时为0
-            return datetime.timedelta(hours=0, minutes=int(m), seconds=int(s), milliseconds=int(ms))
-        except ValueError:
-             print(f"  警告：时间戳值无效 (可能超出范围): {ts_str}")
-             return None
-
-
-    # 匹配只有分钟和秒的格式 (允许 m, s 为 1 或 2 位数字)
-    match_ms_only = re.match(r'\[(\d{1,2}):(\d{1,2})\]', ts_str)
-    if match_ms_only:
-        m, s = match_ms_only.groups()
-        try:
-            return datetime.timedelta(hours=0, minutes=int(m), seconds=int(s))
-        except ValueError:
-             print(f"  警告：时间戳值无效 (可能超出范围): {ts_str}")
-             return None
-
-    # 如果以上都不匹配
-    print(f"  警告：无法解析时间戳格式: {ts_str}")
+def parse_timestamp(timestamp_str, line_num=None, file=None, section=None):
+    """
+    解析时间戳字符串为秒数
+    支持格式：'MM:SS.mmm'、'HH:MM:SS.mmm'、'SS.mmm'
+    
+    Args:
+        timestamp_str (str): 要解析的时间戳字符串
+        line_num (int, optional): 时间戳所在行号，用于错误报告
+        file (str, optional): 时间戳所在文件，用于错误报告
+        section (str, optional): 时间戳所在部分，用于错误报告
+    
+    Returns:
+        float 或 None: 解析成功返回秒数，失败返回None
+    """
+    timestamp_str = timestamp_str.strip()
+    
+    # 检查空字符串
+    if not timestamp_str:
+        return None
+    
+    # 尝试匹配不同的时间戳格式
+    formats = [
+        # HH:MM:SS.mmm 格式
+        r'^(\d+):(\d+):(\d+)\.(\d+)$',
+        # MM:SS.mmm 格式
+        r'^(\d+):(\d+)\.(\d+)$',
+        # SS.mmm 格式
+        r'^(\d+)\.(\d+)$'
+    ]
+    
+    for fmt_idx, fmt in enumerate(formats):
+        match = re.match(fmt, timestamp_str)
+        if match:
+            groups = match.groups()
+            
+            try:
+                if fmt_idx == 0:  # HH:MM:SS.mmm
+                    hours = int(groups[0])
+                    minutes = int(groups[1])
+                    seconds = int(groups[2])
+                    milliseconds = int(groups[3])
+                    
+                    # 验证有效范围
+                    if not (0 <= minutes < 60 and 0 <= seconds < 60 and 0 <= milliseconds < 1000):
+                        # 收集错误信息
+                        error_info = {
+                            "file": file,
+                            "line_num": line_num,
+                            "section": section,
+                            "timestamp_str": timestamp_str,
+                            "reason": "时间格式数值超出有效范围"
+                        }
+                        parse_timestamp.errors.append(error_info)
+                        return None
+                    
+                    total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000
+                
+                elif fmt_idx == 1:  # MM:SS.mmm
+                    minutes = int(groups[0])
+                    seconds = int(groups[1])
+                    milliseconds = int(groups[2])
+                    
+                    # 验证有效范围
+                    if not (0 <= seconds < 60 and 0 <= milliseconds < 1000):
+                        # 收集错误信息
+                        error_info = {
+                            "file": file,
+                            "line_num": line_num,
+                            "section": section,
+                            "timestamp_str": timestamp_str,
+                            "reason": "时间格式数值超出有效范围"
+                        }
+                        parse_timestamp.errors.append(error_info)
+                        return None
+                    
+                    total_seconds = minutes * 60 + seconds + milliseconds / 1000
+                
+                else:  # SS.mmm
+                    seconds = int(groups[0])
+                    milliseconds = int(groups[1])
+                    total_seconds = seconds + milliseconds / 1000
+                
+                return total_seconds
+            
+            except (ValueError, IndexError) as e:
+                # 收集错误信息
+                error_info = {
+                    "file": file,
+                    "line_num": line_num,
+                    "section": section,
+                    "timestamp_str": timestamp_str,
+                    "reason": str(e)
+                }
+                parse_timestamp.errors.append(error_info)
+                return None
+    
+    # 如果所有格式都不匹配
+    error_info = {
+        "file": file,
+        "line_num": line_num,
+        "section": section,
+        "timestamp_str": timestamp_str,
+        "reason": "不匹配任何支持的时间戳格式"
+    }
+    parse_timestamp.errors.append(error_info)
     return None
+
+# 添加错误收集列表作为函数的属性
+parse_timestamp.errors = []
 
 def timedelta_to_srt_time(td):
     """将 timedelta 转换为 SRT 时间格式 hh:mm:ss,ms"""
@@ -169,8 +213,9 @@ def generate_srt(transcript_dir, audio_dir, output_srt_file, content_choice='tra
         progress_queue (Queue, optional): 用于报告进度的队列对象
     
     Returns:
-        bool: 操作是否成功
+        bool or str: 操作成功返回 True，失败返回 False，需要用户干预返回 'PARSE_ERROR'
     """
+    parsing_errors = [] # 用于收集解析错误
     first_chunk_offset_td = datetime.timedelta(seconds=first_chunk_offset)
     
     status_msg = f"开始合并字幕文件... 输出内容: {content_choice}, 输出文件: {output_srt_file}"
@@ -333,21 +378,35 @@ def generate_srt(transcript_dir, audio_dir, output_srt_file, content_choice='tra
                     progress_queue.put(warning_msg)
                 print(warning_msg)
             else:
-                for line in ts_transcript_lines:
-                    match = re.match(r'(\[[^\]]+\])\s*(.*)', line.strip())
+                for line_num, line in enumerate(ts_transcript_lines):
+                    # 修改正则表达式，直接提取方括号内的内容
+                    match = re.match(r'\[([^\]]+)\]\s*(.*)', line.strip())
                     if match:
                         ts_str, text = match.groups()
-                        local_time = parse_timestamp(ts_str)
-                        if local_time is not None and text:
-                            # 应用偏移
-                            start_time = local_time + offset
+                        local_time = parse_timestamp(ts_str, line_num=line_num + 1, file=filename, section="Timestamped Transcript")
+                        if local_time is None:
+                            # 收集解析错误信息
+                            parsing_errors.append({
+                                "file": filename,
+                                "line_num": line_num + 1,
+                                "section": "Timestamped Transcript",
+                                "timestamp_str": ts_str,
+                                "content": text[:50] + "..." if len(text) > 50 else text
+                            })
+                            continue # 跳过此错误行
+                        
+                        if text:  # 确保有文本内容
+                            # 将local_time转为timedelta，然后与offset相加
+                            local_timedelta = datetime.timedelta(seconds=local_time)
+                            absolute_time = offset + local_timedelta
+                            
                             # 如果是第一个块 (i == 0) 并且设置了手动偏移，则加上它
                             if i == 0 and first_chunk_offset_td.total_seconds() != 0.0:
-                                start_time += first_chunk_offset_td
+                                absolute_time += first_chunk_offset_td
                             
-                            if start_time not in all_subs_data:
-                                all_subs_data[start_time] = {'transcript': None, 'translation': None}
-                            all_subs_data[start_time]['transcript'] = text.strip()
+                            if absolute_time.total_seconds() not in all_subs_data:
+                                all_subs_data[absolute_time.total_seconds()] = {'transcript': None, 'translation': None}
+                            all_subs_data[absolute_time.total_seconds()]['transcript'] = text.strip()
 
         if content_choice in ['translation', 'both']:
             ts_translation_lines = extract_section(lines, "Timestamped Translation:")
@@ -357,23 +416,66 @@ def generate_srt(transcript_dir, audio_dir, output_srt_file, content_choice='tra
                     progress_queue.put(warning_msg)
                 print(warning_msg)
             else:
-                for line in ts_translation_lines:
-                    match = re.match(r'(\[[^\]]+\])\s*(.*)', line.strip())
+                for line_num, line in enumerate(ts_translation_lines):
+                    # 修改正则表达式，直接提取方括号内的内容
+                    match = re.match(r'\[([^\]]+)\]\s*(.*)', line.strip())
                     if match:
                         ts_str, text = match.groups()
-                        local_time = parse_timestamp(ts_str)
-                        if local_time is not None and text:
-                            # 应用偏移
-                            start_time = local_time + offset
+                        local_time = parse_timestamp(ts_str, line_num=line_num + 1, file=filename, section="Timestamped Translation")
+                        if local_time is None:
+                            # 收集解析错误信息
+                            parsing_errors.append({
+                                "file": filename,
+                                "line_num": line_num + 1,
+                                "section": "Timestamped Translation",
+                                "timestamp_str": ts_str,
+                                "content": text[:50] + "..." if len(text) > 50 else text
+                            })
+                            continue # 跳过此错误行
+                        
+                        if text:  # 确保有文本内容
+                            # 将local_time转为timedelta，然后与offset相加
+                            local_timedelta = datetime.timedelta(seconds=local_time)
+                            absolute_time = offset + local_timedelta
+                            
                             # 如果是第一个块 (i == 0) 并且设置了手动偏移，则加上它
                             if i == 0 and first_chunk_offset_td.total_seconds() != 0.0:
-                                start_time += first_chunk_offset_td
+                                absolute_time += first_chunk_offset_td
                             
-                            if start_time not in all_subs_data:
-                                all_subs_data[start_time] = {'transcript': None, 'translation': None}
-                            all_subs_data[start_time]['translation'] = text.strip()
+                            if absolute_time.total_seconds() not in all_subs_data:
+                                all_subs_data[absolute_time.total_seconds()] = {'transcript': None, 'translation': None}
+                            all_subs_data[absolute_time.total_seconds()]['translation'] = text.strip()
 
-    # 4. 格式化并排序最终字幕列表
+    # 4. 检查是否有解析错误
+    if parsing_errors:
+        error_msg_header = "\n错误：在合并过程中发现时间戳解析错误。请检查并修正以下文件："
+        print(error_msg_header, file=sys.stderr)
+        
+        if progress_queue:
+            # 发送详细错误信息和需要干预的信号
+            error_data = {
+                'type': 'PARSE_ERROR',
+                'errors': parsing_errors,
+                'message': error_msg_header
+            }
+            progress_queue.put(error_data)
+
+        # 打印详细错误到控制台（无论是否有GUI）
+        for error in parsing_errors:
+            err_detail = (f"  - 文件: {error['file']}, "
+                        f"部分: {error['section']}, "
+                        f"行号: {error['line_num']}, "
+                        f"时间戳: '{error['timestamp_str']}', "
+                        f"内容预览: '{error['content']}'")
+            print(err_detail, file=sys.stderr)
+
+        final_err_msg = "请修正上述文件中的时间戳格式后再试。"
+        print(final_err_msg, file=sys.stderr)
+        
+        # 返回特殊标志，表示需要用户干预
+        return 'PARSE_ERROR'
+
+    # 5. 格式化并排序最终字幕列表 (如果无错误则继续)
     status_msg = "格式化并排序所有字幕条目..."
     if progress_queue:
         progress_queue.put(status_msg)
@@ -400,9 +502,11 @@ def generate_srt(transcript_dir, audio_dir, output_srt_file, content_choice='tra
             combined_text = "\n".join(parts)  # 转录在上，翻译在下
 
         if combined_text:  # 只有当有内容时才添加
-            final_subs.append((start_time, combined_text))
+            # 将时间戳float转换为timedelta对象
+            start_time_td = datetime.timedelta(seconds=start_time)
+            final_subs.append((start_time_td, combined_text))
 
-    # 5. 生成 SRT 文件
+    # 6. 生成 SRT 文件
     status_msg = f"生成 SRT 文件: {output_srt_file}"
     if progress_queue:
         progress_queue.put(status_msg)

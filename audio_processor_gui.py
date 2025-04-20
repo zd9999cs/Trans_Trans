@@ -12,6 +12,7 @@ import time
 import multiprocessing
 import signal
 import psutil
+import subprocess
 from datetime import datetime
 
 # 导入主调用脚本中的处理函数和视频检测函数
@@ -147,9 +148,12 @@ class AudioProcessorGUI(tk.Tk):
         self.process_thread = None
         self.process = None  # 存储子进程对象
         self.process_pid = None  # 存储进程PID
+        self.waiting_for_user_fix = False  # 标记是否正在等待用户修复时间戳
+        self.error_files = []  # 存储需要修复的文件信息
         
-        # 创建进度队列
+        # 创建进度队列和控制队列
         self.progress_queue = multiprocessing.Queue()
+        self.control_queue = multiprocessing.Queue()  # 新增控制队列，用于发送用户干预信号
         
         # 存储UI组件的引用
         self.ui_elements = {}
@@ -305,6 +309,15 @@ class AudioProcessorGUI(tk.Tk):
         self.stop_button = ttk.Button(button_frame, text=translations[self.current_language.get()]["stop_process"], command=self.stop_processing, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=5)
         
+        # 添加用户修复错误和重试按钮 - 默认禁用
+        self.retry_button = ttk.Button(button_frame, text="重试合并", command=self.retry_combine, state=tk.DISABLED)
+        self.retry_button.pack(side=tk.LEFT, padx=5)
+        self.ui_elements["retry_button"] = self.retry_button
+        
+        self.open_error_file_button = ttk.Button(button_frame, text="打开错误文件", command=self.open_error_file, state=tk.DISABLED)
+        self.open_error_file_button.pack(side=tk.LEFT, padx=5)
+        self.ui_elements["open_error_file_button"] = self.open_error_file_button
+        
         # 创建进度框架
         progress_frame = ttk.LabelFrame(main_frame, text=translations[self.current_language.get()]["progress"], padding="10")
         progress_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -319,6 +332,24 @@ class AudioProcessorGUI(tk.Tk):
         self.status_var = tk.StringVar(value=translations[self.current_language.get()]["ready"])
         status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # 添加翻译条目
+        if "zh_CN" in translations:
+            translations["zh_CN"]["retry_combine"] = "重试合并"
+            translations["zh_CN"]["open_error_file"] = "打开错误文件"
+            translations["zh_CN"]["timestamp_error"] = "时间戳解析错误"
+            translations["zh_CN"]["timestamp_error_message"] = "检测到时间戳解析错误。请修改出错的文件后点击\"重试合并\"按钮。"
+            translations["zh_CN"]["select_error_file"] = "请选择要打开的错误文件"
+            translations["zh_CN"]["error_file_not_found"] = "错误文件未找到或已被移动"
+            translations["zh_CN"]["waiting_for_fix"] = "等待修复..."
+        if "en_US" in translations:
+            translations["en_US"]["retry_combine"] = "Retry Combine"
+            translations["en_US"]["open_error_file"] = "Open Error File"
+            translations["en_US"]["timestamp_error"] = "Timestamp Parse Error"
+            translations["en_US"]["timestamp_error_message"] = "Timestamp parsing errors detected. Please edit the error files and click 'Retry Combine' button."
+            translations["en_US"]["select_error_file"] = "Please select an error file to open"
+            translations["en_US"]["error_file_not_found"] = "Error file not found or has been moved"
+            translations["en_US"]["waiting_for_fix"] = "Waiting for fix..."
     
     def toggle_api_key_visibility(self, entry):
         """切换API密钥的可见性"""
@@ -378,6 +409,14 @@ class AudioProcessorGUI(tk.Tk):
         if not messagebox.askyesno(translations[self.current_language.get()]["confirm_start"], translations[self.current_language.get()]["confirm_start_message"]):
             return
         
+        # 重置错误文件列表和等待修复状态
+        self.error_files = []
+        self.waiting_for_user_fix = False
+        
+        # 确保重试和打开错误文件按钮处于禁用状态
+        self.retry_button.config(state=tk.DISABLED)
+        self.open_error_file_button.config(state=tk.DISABLED)
+        
         # 准备参数
         params = {
             'input_audio': self.input_file_path.get(),  # 保持与process_audio.py兼容
@@ -409,7 +448,7 @@ class AudioProcessorGUI(tk.Tk):
         # 启动处理进程
         self.process = multiprocessing.Process(
             target=run_pipeline,
-            args=(params, self.progress_queue)
+            args=(params, self.progress_queue, self.control_queue)  # 添加控制队列
         )
         self.process.start()
         self.process_pid = self.process.pid
@@ -421,41 +460,121 @@ class AudioProcessorGUI(tk.Tk):
         )
         self.process_thread.start()
     
-    def run_processing_thread(self, params):
-        """在单独的线程中运行处理流程"""
-        try:
-            # 在进度显示中添加开始信息
-            filepath = params['input_audio']
-            filename = os.path.basename(filepath)
+    def retry_combine(self):
+        """用户修复时间戳错误后，发送重试信号"""
+        if not self.waiting_for_user_fix:
+            return
             
-            # 确定文件类型
-            file_type = translations[self.current_language.get()]["video_file"] if is_video_file(filepath) else translations[self.current_language.get()]["audio_file"]
+        # 更新状态
+        self.status_var.set(translations[self.current_language.get()]["processing"])
+        self.add_progress("发送重试信号，继续合并转录...")
+        
+        # 发送重试信号到控制队列
+        self.control_queue.put('RETRY_COMBINE')
+        
+        # 更新 UI 状态
+        self.waiting_for_user_fix = False
+        self.retry_button.config(state=tk.DISABLED)
+        self.open_error_file_button.config(state=tk.DISABLED)
+    
+    def open_error_file(self):
+        """打开包含时间戳错误的文件供用户修改"""
+        if not self.error_files:
+            messagebox.showinfo(
+                translations[self.current_language.get()]["timestamp_error"],
+                "没有需要修复的文件信息。"
+            )
+            return
             
-            self.add_progress(f"{translations[self.current_language.get()]['start_process']}{file_type}: {filename}")
-            self.add_progress(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            self.add_progress("-" * 50)
+        # 如果只有一个错误文件，直接打开
+        if len(self.error_files) == 1:
+            error_info = self.error_files[0]
+            self.open_file_with_default_editor(error_info)
+            return
             
-            # 调用处理函数
-            success = run_pipeline(params, self.progress_queue)
-            
-            # 处理完成后更新UI
-            if success:
-                elapsed = time.time() - self.start_time
-                self.add_progress(f"\n{translations[self.current_language.get()]['complete']}！总耗时: {elapsed:.2f}秒")
-                messagebox.showinfo(translations[self.current_language.get()]["complete"], translations[self.current_language.get()]["complete_message"].format(output_dir=params['output_dir']))
+        # 如果有多个错误文件，显示选择对话框
+        error_file_options = []
+        for i, error_info in enumerate(self.error_files):
+            filename = error_info.get("file", "未知文件")
+            section = error_info.get("section", "未知段落")
+            timestamp = error_info.get("timestamp_str", "未知时间戳")
+            error_file_options.append(f"{i+1}. {filename} - {section} - {timestamp}")
+        
+        # 创建一个简单的对话框让用户选择
+        select_dialog = tk.Toplevel(self)
+        select_dialog.title(translations[self.current_language.get()]["select_error_file"])
+        select_dialog.geometry("500x300")
+        select_dialog.resizable(False, False)
+        select_dialog.transient(self)
+        select_dialog.grab_set()
+        
+        ttk.Label(select_dialog, text="请选择要打开的错误文件:").pack(pady=10)
+        
+        listbox = tk.Listbox(select_dialog, width=70, height=10)
+        for option in error_file_options:
+            listbox.insert(tk.END, option)
+        listbox.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        
+        def on_select():
+            selected_idx = listbox.curselection()
+            if selected_idx:  # 确保选择了某项
+                error_info = self.error_files[selected_idx[0]]
+                self.open_file_with_default_editor(error_info)
+                select_dialog.destroy()
             else:
-                self.add_progress(f"\n{translations[self.current_language.get()]['process_failed']}")
-                messagebox.showerror(translations[self.current_language.get()]["error"], translations[self.current_language.get()]["process_failed"])
+                messagebox.showinfo("提示", "请选择一个文件")
+        
+        ttk.Button(select_dialog, text="打开选中文件", command=on_select).pack(pady=10)
+        ttk.Button(select_dialog, text="取消", command=select_dialog.destroy).pack(pady=5)
+    
+    def open_file_with_default_editor(self, error_info):
+        """使用系统默认编辑器打开包含错误的文件"""
+        if not error_info or "file" not in error_info:
+            return
+            
+        filename = error_info.get("file")
+        output_dir = self.output_dir_path.get()
+        
+        if not output_dir:
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                "输出目录未设置，无法定位错误文件。"
+            )
+            return
+            
+        intermediate_dir = os.path.join(output_dir, "intermediate_transcripts")
+        file_path = os.path.join(intermediate_dir, filename)
+        
+        if not os.path.exists(file_path):
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                translations[self.current_language.get()]["error_file_not_found"]
+            )
+            return
+            
+        # 获取行号信息
+        line_num = error_info.get("line_num", 1)
+        section = error_info.get("section", "未知段落")
+        timestamp = error_info.get("timestamp_str", "未知时间戳")
+        
+        # 向用户显示错误详情
+        self.add_progress(f"打开错误文件: {file_path}")
+        self.add_progress(f"问题位置: 第 {line_num} 行, 段落: {section}, 时间戳: {timestamp}")
+        self.add_progress("请修复不正确的时间戳格式，然后点击'重试合并'按钮。")
+        
+        # 尝试使用系统默认应用程序打开文件
+        try:
+            if sys.platform == 'win32':  # Windows
+                os.startfile(file_path)
+            elif sys.platform == 'darwin':  # macOS
+                subprocess.call(['open', file_path])
+            else:  # Linux
+                subprocess.call(['xdg-open', file_path])
         except Exception as e:
-            # 处理意外错误
-            self.add_progress(f"\n{translations[self.current_language.get()]['unexpected_error'].format(error=str(e))}")
-            messagebox.showerror(translations[self.current_language.get()]["error"], translations[self.current_language.get()]["unexpected_error"].format(error=str(e)))
-        finally:
-            # 恢复UI状态
-            self.processing = False
-            self.start_button.config(state=tk.NORMAL)
-            self.stop_button.config(state=tk.DISABLED)
-            self.status_var.set(translations[self.current_language.get()]["ready"])
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                f"无法打开文件: {str(e)}"
+            )
     
     def stop_processing(self):
         """暴力停止处理进程及其所有子进程"""
@@ -465,6 +584,13 @@ class AudioProcessorGUI(tk.Tk):
         if messagebox.askyesno(translations[self.current_language.get()]["confirm_stop"], translations[self.current_language.get()]["confirm_stop_message"]):
             self.add_progress(f"\n{translations[self.current_language.get()]['user_stop']}")
             self.status_var.set(translations[self.current_language.get()]["stopped"])
+            
+            # 如果正在等待用户修复，发送停止信号
+            if self.waiting_for_user_fix:
+                self.control_queue.put('STOP_PROCESSING')
+                self.waiting_for_user_fix = False
+                self.retry_button.config(state=tk.DISABLED)
+                self.open_error_file_button.config(state=tk.DISABLED)
             
             try:
                 # 获取主进程
@@ -521,12 +647,51 @@ class AudioProcessorGUI(tk.Tk):
             while True:
                 # 从队列中获取消息
                 message = self.progress_queue.get_nowait()
-                self.add_progress(message)
+                
+                # 检查是否为对象（例如错误数据字典）
+                if isinstance(message, dict) and message.get('type') == 'PARSE_ERROR':
+                    self.handle_parse_error(message)
+                else:
+                    self.add_progress(message)
         except queue.Empty:
             pass
         
         # 每100毫秒检查一次队列
         self.after(100, self.check_queue)
+    
+    def handle_parse_error(self, error_data):
+        """处理时间戳解析错误的特殊消息"""
+        self.error_files = error_data.get('errors', [])
+        self.waiting_for_user_fix = True
+        
+        # 更新UI状态
+        self.status_var.set(translations[self.current_language.get()]["waiting_for_fix"])
+        
+        # 启用重试按钮和打开错误文件按钮
+        self.retry_button.config(state=tk.NORMAL)
+        self.open_error_file_button.config(state=tk.NORMAL)
+        
+        # 添加提示信息到进度显示
+        self.add_progress("\n" + "-" * 50)
+        self.add_progress(f"检测到 {len(self.error_files)} 个时间戳解析错误！")
+        self.add_progress(translations[self.current_language.get()]["timestamp_error_message"])
+        self.add_progress("错误文件列表:")
+        
+        # 显示错误详情
+        for i, error in enumerate(self.error_files):
+            error_detail = (f"  {i+1}. 文件: {error.get('file', '未知')}, "
+                           f"部分: {error.get('section', '未知')}, "
+                           f"行号: {error.get('line_num', '未知')}, "
+                           f"时间戳: '{error.get('timestamp_str', '未知')}'")
+            self.add_progress(error_detail)
+        
+        self.add_progress("-" * 50)
+        
+        # 弹出提示消息
+        messagebox.showinfo(
+            translations[self.current_language.get()]["timestamp_error"],
+            translations[self.current_language.get()]["timestamp_error_message"]
+        )
     
     def add_progress(self, message):
         """向进度显示添加消息"""
@@ -571,7 +736,14 @@ class AudioProcessorGUI(tk.Tk):
         self.start_button.config(text=translations[lang]["start_process"])
         self.stop_button.config(text=translations[lang]["stop_process"])
         self.ui_elements["progress_frame"].config(text=translations[lang]["progress"])
-        self.status_var.set(translations[lang]["ready"])
+        self.ui_elements["retry_button"].config(text=translations[lang]["retry_combine"])
+        self.ui_elements["open_error_file_button"].config(text=translations[lang]["open_error_file"])
+        
+        # 更新状态栏
+        if self.waiting_for_user_fix:
+            self.status_var.set(translations[lang]["waiting_for_fix"])
+        else:
+            self.status_var.set(translations[lang]["ready"])
         
         # 更新文件类型提示信息
         if self.input_file_path.get():
@@ -593,6 +765,10 @@ class AudioProcessorGUI(tk.Tk):
         # 如果进程自然完成（而不是被强制终止），更新UI状态
         if not self.processing:
             return  # 如果已经通过stop_processing更新了状态，不再处理
+        
+        # 如果在等待用户修复，则不改变界面状态
+        if self.waiting_for_user_fix:
+            return
             
         # 进程自然完成，更新UI状态
         elapsed = time.time() - self.start_time
