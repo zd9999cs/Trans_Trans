@@ -56,6 +56,7 @@ venv.bak/
 *.mp3
 *.mp4
 *.webm
+*.mkv
 *.wav
 *.flac
 *.m4a

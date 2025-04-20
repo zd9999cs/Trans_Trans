@@ -211,4 +211,4 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 
 ## TODO
 
-- [] Improve recognition when there are multiple people speaking.
+- [ ] Improve recognition when there are multiple people speaking.
