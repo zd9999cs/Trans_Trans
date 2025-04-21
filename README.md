@@ -1,6 +1,6 @@
 # Audio/Video Transcription and Subtitle Generator
 
-This is an integrated audio/video processing tool that can transcribe long audio or video files into text and generate SRT subtitles. The tool automatically handles the entire process, including: audio extraction from video, audio splitting, transcription, translation, and subtitle generation.
+This is an integrated audio/video processing tool that can transcribe long audio or video files into text and generate SRT subtitles using Google Gemini. The tool automatically handles the entire process, including: audio extraction from video, audio splitting, transcription, translation, and subtitle generation.
 
 [中文版说明](README_CN.md)
 
