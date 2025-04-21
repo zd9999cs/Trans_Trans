@@ -31,7 +31,7 @@ This is an integrated audio/video processing tool that can transcribe long audio
 2. Install the necessary Python dependencies:
 
 ```bash
-pip install pydub librosa soundfile google-generativeai numpy psutil mutagen
+pip install pydub librosa soundfile google-genai numpy psutil mutagen
 ```
 
 3. Ensure FFmpeg is installed on your system (for video processing):

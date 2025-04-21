@@ -31,7 +31,7 @@
 2. 安装必要的 Python 依赖：
 
 ```bash
-pip install pydub librosa soundfile google-generativeai numpy psutil mutagen
+pip install pydub librosa soundfile google-genai numpy psutil mutagen
 ```
 
 3. 确保系统中已安装 FFmpeg (用于视频处理)：
