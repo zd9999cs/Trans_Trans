@@ -212,3 +212,6 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 ## TODO
 
 - [ ] Improve recognition when there are multiple people speaking.
+- [ ] Anti-degenerecy when repeated word is used in the speech
+- [ ] API error handling with retrial
+- [ ] Parallel use of API? No need to provide context for different chunks it seems.

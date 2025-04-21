@@ -3,11 +3,14 @@ from google import genai
 import time
 import pathlib
 from google.genai import types
+import random # 导入 random 用于增加抖动
 
 # --- 配置 ---
 API_KEY = "YOUR_API_KEY_HERE" # 默认API密钥，建议通过参数传入而非硬编码
 AUDIO_DIR = "temp_audio_chunks_new_api" # 默认音频目录
 INTERMEDIATE_DIR = "intermediate_transcripts" # 默认中间转录文件目录
+MAX_RETRIES = 3 # 最大重试次数
+INITIAL_DELAY = 1 # 初始延迟秒数
 # -------------
 
 # --- 系统指令 ---
@@ -46,7 +49,7 @@ def initialize_genai_client(api_key):
         return None
 
 def process_audio_file(filepath, client, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION):
-    """处理单个音频文件：上传、转录、删除，并保存中间转录文件。"""
+    """处理单个音频文件：上传、转录、删除，并保存中间转录文件，增加重试逻辑。"""
     filename = os.path.basename(filepath)
     transcript_filename = pathlib.Path(filename).stem + ".txt"
     intermediate_filepath = os.path.join(intermediate_dir, transcript_filename)
@@ -54,60 +57,135 @@ def process_audio_file(filepath, client, intermediate_dir, system_instruction=SY
     print(f"开始处理: {filename}")
     transcript = ""
     uploaded_file = None
+    last_exception = None # 存储最后一次异常
 
-    try:
-        # 1. 上传文件
-        print(f"  上传中: {filename}")
-        uploaded_file = client.files.upload(file=filepath)
-        print(f"  已上传: {filename} -> {uploaded_file.name}")
+    # --- 文件上传重试逻辑 ---
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  上传中 (尝试 {attempt + 1}/{MAX_RETRIES}): {filename}")
+            uploaded_file = client.files.upload(file=filepath)
+            print(f"  已上传: {filename} -> {uploaded_file.name}")
+            last_exception = None # 成功后清除异常
+            break # 上传成功，跳出重试循环
+        except Exception as e:
+            last_exception = e
+            print(f"  上传失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+            if attempt < MAX_RETRIES - 1:
+                # 指数退避 + 抖动
+                delay = (INITIAL_DELAY * (2 ** attempt)) + random.uniform(0, 1)
+                print(f"  将在 {delay:.2f} 秒后重试上传...")
+                time.sleep(delay)
+            else:
+                print(f"  上传达到最大重试次数，放弃文件: {filename}")
+                # 记录错误到中间文件
+                try:
+                    with open(intermediate_filepath, "w", encoding="utf-8") as f_inter:
+                        f_inter.write(f"Error uploading {filename} after {MAX_RETRIES} attempts: {last_exception}\n")
+                    print(f"  已保存上传错误信息到中间文件: {intermediate_filepath}")
+                except IOError as e_write_err:
+                     print(f"  错误：无法写入上传错误信息的中间文件 {intermediate_filepath}: {e_write_err}")
+                return "" # 上传失败，返回空
 
-        # 2. 生成内容 (转录) - 使用 system_instruction
-        print(f"  请求转录: {filename}")
-        response = client.models.generate_content(
-            model="gemini-2.5-pro-preview-03-25", # 确认模型支持 system_instruction
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction, # 使用传入的系统指令
-            ),
-            contents=[uploaded_file] # contents 只包含文件
-        )
+    # 如果上传成功 (uploaded_file is not None)
+    if uploaded_file:
+        # --- 内容生成重试逻辑 ---
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"  请求转录 (尝试 {attempt + 1}/{MAX_RETRIES}): {filename}")
+                response = client.models.generate_content(
+                    model="gemini-2.5-pro-preview-03-25",
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                    ),
+                    contents=[uploaded_file]
+                )
+                transcript = response.text
+                last_exception = None # 成功后清除异常
+                print(f"  获取到转录: {filename}")
+                break # 转录成功，跳出重试循环
+            except Exception as e:
+                last_exception = e
+                print(f"  转录失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+                # 修改这里，加入对 502 错误的判断
+                error_str = str(e).lower() # 转小写方便判断
+                # 检查是否是适合重试的错误类型或消息
+                if "disconnected" in error_str or \
+                   "unavailable" in error_str or \
+                   "502 bad gateway" in error_str or \
+                   "internal server error" in error_str or \
+                   "500 internal server error" in error_str or \
+                   "503 service unavailable" in error_str or \
+                   "504 gateway timeout" in error_str or \
+                   isinstance(e, types.generation_types.StopCandidateException):
+                    if attempt < MAX_RETRIES - 1:
+                        delay = (INITIAL_DELAY * (2 ** attempt)) + random.uniform(0, 1)
+                        print(f"  检测到可重试错误，将在 {delay:.2f} 秒后重试转录...")
+                        time.sleep(delay)
+                    else:
+                        print(f"  转录达到最大重试次数，放弃文件: {filename}")
+                else:
+                    # 对于可能不适合重试的错误（如API密钥错误、请求格式错误 4xx），直接跳出重试
+                    print(f"  遇到非暂时性错误或未知错误，停止重试: {filename}")
+                    break # 跳出重试循环，后续会记录错误
 
-        transcript = response.text
+        # --- 保存转录或错误信息 ---
         if transcript:
-            print(f"  获取到转录: {filename}")
-            # 尝试保存中间文件
             try:
                 with open(intermediate_filepath, "w", encoding="utf-8") as f_inter:
                     f_inter.write(transcript)
                 print(f"  已保存中间转录文件: {intermediate_filepath}")
             except IOError as e_write:
                 print(f"  错误：无法写入中间文件 {intermediate_filepath}: {e_write}")
-        else:
-            print(f"  警告：文件 {filename} 未返回有效转录文本。")
-            transcript = ""
+                # 即使写入失败，也尝试删除上传的文件
+        elif last_exception: # 如果转录为空且有异常发生（无论是重试耗尽还是非暂时错误）
+            print(f"  警告：文件 {filename} 未能成功转录。最后错误: {last_exception}")
+            try:
+                with open(intermediate_filepath, "w", encoding="utf-8") as f_inter:
+                    f_inter.write(f"Error processing {filename} after retries: {last_exception}\n")
+                print(f"  已保存转录错误信息到中间文件: {intermediate_filepath}")
+            except IOError as e_write_err:
+                 print(f"  错误：无法写入转录错误信息的中间文件 {intermediate_filepath}: {e_write_err}")
+            transcript = "" # 确保返回空字符串
+        else: # 转录为空但没有异常（例如模型返回空内容）
+             print(f"  警告：文件 {filename} 返回了空转录文本，但没有检测到API错误。")
+             try:
+                 # 仍然可以写入一个空文件或包含警告的文件
+                 with open(intermediate_filepath, "w", encoding="utf-8") as f_inter:
+                     f_inter.write(f"Warning: Empty transcript returned for {filename} without API error.\n")
+                 print(f"  已保存空转录警告到中间文件: {intermediate_filepath}")
+             except IOError as e_write_err:
+                 print(f"  错误：无法写入空转录警告的中间文件 {intermediate_filepath}: {e_write_err}")
+             transcript = ""
 
-        # 3. 删除已上传的文件
-        print(f"  删除已上传文件: {uploaded_file.name}")
-        client.files.delete(name=uploaded_file.name)
-        print(f"  已删除: {uploaded_file.name}")
+        # --- 文件删除重试逻辑 ---
+        last_delete_exception = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"  删除已上传文件 (尝试 {attempt + 1}/{MAX_RETRIES}): {uploaded_file.name}")
+                client.files.delete(name=uploaded_file.name)
+                print(f"  已删除: {uploaded_file.name}")
+                last_delete_exception = None
+                break # 删除成功
+            except Exception as delete_err:
+                last_delete_exception = delete_err
+                print(f"  删除文件失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {delete_err}")
+                if attempt < MAX_RETRIES - 1:
+                    delay = (INITIAL_DELAY * (2 ** attempt)) + random.uniform(0, 1)
+                    print(f"  将在 {delay:.2f} 秒后重试删除...")
+                    time.sleep(delay)
+                else:
+                    print(f"  删除文件 {uploaded_file.name} 达到最大重试次数，放弃删除。")
+
+        if last_delete_exception:
+             # 记录删除失败，但不影响函数返回值
+             print(f"  最终未能删除文件 {uploaded_file.name}: {last_delete_exception}")
 
         return transcript
 
-    except Exception as e:
-        print(f"处理文件 {filename} 时出错: {e}")
-        if uploaded_file:
-            try:
-                 print(f"  尝试删除出错文件对应的上传: {uploaded_file.name}")
-                 client.files.delete(name=uploaded_file.name)
-                 print(f"  已删除出错文件对应的上传: {uploaded_file.name}")
-            except Exception as delete_err:
-                 print(f"  删除文件 {uploaded_file.name} 时也发生错误: {delete_err}")
-        try:
-            with open(intermediate_filepath, "w", encoding="utf-8") as f_inter:
-                f_inter.write(f"Error processing {filename}: {e}\n")
-            print(f"  已保存错误信息到中间文件: {intermediate_filepath}")
-        except IOError as e_write_err:
-             print(f"  错误：无法写入错误信息的中间文件 {intermediate_filepath}: {e_write_err}")
-        return ""
+    else:
+        # 如果 uploaded_file 为 None (即上传从未成功)
+        print(f"文件 {filename} 未能上传，跳过后续处理。")
+        return "" # 确保返回空字符串
 
 def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, progress_queue=None):
     """处理一个目录中的所有音频文件，生成转录文本"""

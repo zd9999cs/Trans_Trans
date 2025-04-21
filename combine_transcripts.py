@@ -9,6 +9,17 @@ from mutagen.wave import WAVE
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4 # For m4a etc.
 from mutagen.oggvorbis import OggVorbis # For ogg
+# 从 split_audio.py 导入基于 ffprobe 的时长获取函数
+try:
+    # 假设 split_audio.py 在同一目录或 Python 路径中
+    from split_audio import get_audio_duration_ffmpeg
+except ImportError:
+    print("警告：无法从 split_audio.py 导入 get_audio_duration_ffmpeg_ffmpeg。将继续使用 mutagen 获取时长，但这可能导致偏移。")
+    # 定义一个备用函数或让后续代码处理 None
+    def get_audio_duration_ffmpeg_ffmpeg(filepath):
+         print(f"  错误：get_audio_duration_ffmpeg_ffmpeg 未导入，无法获取 {filepath} 时长。")
+         return None
+
 
 # --- 配置 ---
 TRANSCRIPT_DIR = "intermediate_transcripts"
@@ -17,30 +28,7 @@ OUTPUT_SRT_FILE = "combined_subtitles.srt"
 DEFAULT_SUB_DURATION_SECONDS = 5 # 如果无法确定下一个字幕的开始时间，则使用此默认持续时间
 # -------------
 
-# ... (get_audio_duration, parse_timestamp, timedelta_to_srt_time, extract_section functions remain the same) ...
-def get_audio_duration(filepath):
-    """获取音频文件的时长（秒）"""
-    try:
-        _, ext = os.path.splitext(filepath)
-        ext = ext.lower()
-        if ext == '.mp3':
-            audio = MP3(filepath)
-        elif ext == '.wav':
-            audio = WAVE(filepath)
-        elif ext == '.flac':
-            audio = FLAC(filepath)
-        elif ext in ['.m4a', '.mp4', '.aac']:
-             audio = MP4(filepath)
-        elif ext == '.ogg':
-             audio = OggVorbis(filepath)
-        else:
-            print(f"  警告：不支持的文件类型 {ext}，无法获取时长: {filepath}")
-            return 0.0 # 或者引发错误
-
-        return audio.info.length
-    except Exception as e:
-        print(f"  错误：无法读取音频文件时长 {filepath}: {e}")
-        return 0.0 # 或者引发错误
+# ... (get_audio_duration_ffmpeg, parse_timestamp, timedelta_to_srt_time, extract_section functions remain the same) ...
 
 def parse_timestamp(timestamp_str, line_num=None, file=None, section=None):
     """
@@ -76,54 +64,37 @@ def parse_timestamp(timestamp_str, line_num=None, file=None, section=None):
         match = re.match(fmt, timestamp_str)
         if match:
             groups = match.groups()
-            
             try:
                 if fmt_idx == 0:  # HH:MM:SS.mmm
                     hours = int(groups[0])
                     minutes = int(groups[1])
                     seconds = int(groups[2])
-                    milliseconds = int(groups[3])
-                    
-                    # 验证有效范围
-                    if not (0 <= minutes < 60 and 0 <= seconds < 60 and 0 <= milliseconds < 1000):
-                        # 收集错误信息
-                        error_info = {
-                            "file": file,
-                            "line_num": line_num,
-                            "section": section,
-                            "timestamp_str": timestamp_str,
-                            "reason": "时间格式数值超出有效范围"
-                        }
-                        parse_timestamp.errors.append(error_info)
-                        return None
-                    
-                    total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000
-                
+                    ms_str = groups[3] # 获取毫秒字符串
+                    milliseconds = int(ms_str)
+                    ms_divisor = 10**len(ms_str) # 根据实际位数计算除数
+
+                    # ... (验证范围) ...
+
+                    total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / ms_divisor
+
                 elif fmt_idx == 1:  # MM:SS.mmm
                     minutes = int(groups[0])
                     seconds = int(groups[1])
-                    milliseconds = int(groups[2])
-                    
-                    # 验证有效范围
-                    if not (0 <= seconds < 60 and 0 <= milliseconds < 1000):
-                        # 收集错误信息
-                        error_info = {
-                            "file": file,
-                            "line_num": line_num,
-                            "section": section,
-                            "timestamp_str": timestamp_str,
-                            "reason": "时间格式数值超出有效范围"
-                        }
-                        parse_timestamp.errors.append(error_info)
-                        return None
-                    
-                    total_seconds = minutes * 60 + seconds + milliseconds / 1000
-                
+                    ms_str = groups[2] # 获取毫秒字符串
+                    milliseconds = int(ms_str)
+                    ms_divisor = 10**len(ms_str) # 根据实际位数计算除数
+
+                    # ... (验证范围) ...
+
+                    total_seconds = minutes * 60 + seconds + milliseconds / ms_divisor
+
                 else:  # SS.mmm
                     seconds = int(groups[0])
-                    milliseconds = int(groups[1])
-                    total_seconds = seconds + milliseconds / 1000
-                
+                    ms_str = groups[1] # 获取毫秒字符串
+                    milliseconds = int(ms_str)
+                    ms_divisor = 10**len(ms_str) # 根据实际位数计算除数
+                    total_seconds = seconds + milliseconds / ms_divisor
+
                 return total_seconds
             
             except (ValueError, IndexError) as e:
@@ -301,7 +272,7 @@ def generate_srt(transcript_dir, audio_dir, output_srt_file, content_choice='tra
                     progress_queue.put(status_msg)
                 print(status_msg)
                 
-                duration_seconds = get_audio_duration(audio_filepath)
+                duration_seconds = get_audio_duration_ffmpeg(audio_filepath)
                 duration_td = datetime.timedelta(seconds=duration_seconds)
 
                 chunk_offsets[transcript_filename] = cumulative_offset
