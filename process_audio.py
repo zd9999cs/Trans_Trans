@@ -134,7 +134,8 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
     silence_threshold = params.get('silence_threshold', -40)  # 默认-40dB
     cleanup = params.get('cleanup', False)
     target_language = params.get('target_language', 'Simplified Chinese')  # 默认简体中文
-    
+    model_name = params.get('model_name', 'gemini-2.5-pro-preview-03-25') # 新增：获取模型名称，默认使用2.5pro
+
     # 验证必要参数
     if not input_file or not os.path.isfile(input_file):
         error_msg = f"错误：输入文件'{input_file}'不存在或不是有效文件。"
@@ -233,7 +234,7 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
         return False
     
     # 2. 转录音频
-    start_msg = f"\n--- 步骤 2: 转录音频片段 (目标语言: {target_language}) ---"
+    start_msg = f"\n--- 步骤 2: 转录音频片段 (目标语言: {target_language}, 模型: {model_name}) ---" # 更新日志信息
     if progress_queue:
         progress_queue.put(start_msg)
     print(start_msg)
@@ -250,6 +251,7 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
             audio_dir=audio_chunk_dir,
             intermediate_dir=intermediate_dir,
             system_instruction=custom_system_instruction,
+            model_name=model_name, # 传递模型名称
             progress_queue=progress_queue
         )
         
@@ -444,6 +446,10 @@ def main():
     parser.add_argument("--first-chunk-offset", type=float, default=0.0,
                       help="第一个音频块的手动时间偏移(秒) (默认: 0.0)")
     
+    # 新增：模型选择参数
+    parser.add_argument("--model-name", default="gemini-1.5-flash",
+                      help="使用的 Gemini 模型名称 (默认: gemini-1.5-flash)")
+
     # 其他选项
     parser.add_argument("--cleanup", action="store_true",
                       help="处理完成后删除中间文件")

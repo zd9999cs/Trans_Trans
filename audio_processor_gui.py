@@ -72,6 +72,7 @@ translations = {
         "select_file": "选择音频或视频文件",
         "select_output_dir": "选择输出目录",
         "user_stop": "用户手动停止处理。",
+        "model": "模型:"
     },
     "en_US": {  # 英文
         "title": "Audio/Video Transcription and Subtitle Generator",
@@ -116,6 +117,7 @@ translations = {
         "select_file": "Select Audio or Video File",
         "select_output_dir": "Select Output Directory",
         "user_stop": "User manually stopped processing.",
+        "model": "Model:"
     }
 }
 
@@ -142,7 +144,8 @@ class AudioProcessorGUI(tk.Tk):
         self.silence_threshold = tk.IntVar(value=-40)
         self.first_chunk_offset = tk.DoubleVar(value=0.0)
         self.cleanup = tk.BooleanVar(value=False)
-        
+        self.model_name = tk.StringVar(value="gemini-2.5-pro-preview-03-25") # 新增：模型名称变量
+
         # 存储当前处理状态
         self.processing = False
         self.process_thread = None
@@ -266,7 +269,19 @@ class AudioProcessorGUI(tk.Tk):
         target_lang_combo['values'] = ('Simplified Chinese', 'Traditional Chinese', 'English', 'Japanese', 'Korean', 'Russian', 'Spanish', 'French', 'German')
         target_lang_combo.current(0)  # 默认选择 'Simplified Chinese'
         target_lang_combo.grid(row=1, column=1, sticky=tk.W, pady=5)
-        
+
+        # 新增：模型选择
+        model_label = ttk.Label(params_frame, text="模型:")
+        model_label.grid(row=1, column=2, sticky=tk.W, pady=5, padx=(10, 0))
+        self.ui_elements["model_label"] = model_label
+
+        model_combo = ttk.Combobox(params_frame, textvariable=self.model_name, width=20)
+        # 添加常见的 Gemini 模型选项，可以根据需要调整
+        model_combo['values'] = ('gemini-2.0-flash', 'gemini-2.5-pro-preview-03-25', 'gemini-2.5-flash-preview-04-17')
+        model_combo.current(0) # 默认选择 flash
+        model_combo.grid(row=1, column=3, sticky=tk.W, pady=5)
+        self.ui_elements["model_combo"] = model_combo
+
         # 音频切分参数
         max_length_label = ttk.Label(params_frame, text=translations[self.current_language.get()]["max_length"])
         max_length_label.grid(row=2, column=0, sticky=tk.W, pady=5)
@@ -428,7 +443,8 @@ class AudioProcessorGUI(tk.Tk):
             'silence_length': self.silence_length.get(),
             'silence_threshold': self.silence_threshold.get(),
             'first_chunk_offset': self.first_chunk_offset.get(),
-            'cleanup': self.cleanup.get()
+            'cleanup': self.cleanup.get(),
+            'model_name': self.model_name.get() # 新增：传递模型名称
         }
         
         # 更新UI状态
@@ -738,7 +754,8 @@ class AudioProcessorGUI(tk.Tk):
         self.ui_elements["progress_frame"].config(text=translations[lang]["progress"])
         self.ui_elements["retry_button"].config(text=translations[lang]["retry_combine"])
         self.ui_elements["open_error_file_button"].config(text=translations[lang]["open_error_file"])
-        
+        self.ui_elements["model_label"].config(text=translations[lang]["model"]) # 更新模型标签
+
         # 更新状态栏
         if self.waiting_for_user_fix:
             self.status_var.set(translations[lang]["waiting_for_fix"])

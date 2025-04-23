@@ -106,6 +106,7 @@ python process_audio.py speech.mp3 --api-key YOUR_API_KEY --output-dir ./output_
   - `transcript`: Transcription only
   - `translation`: Translation only
   - `both`: Both transcription and translation (default)
+- `--model-name`: Gemini model to use for transcription (default: gemini-2.5-pro-preview-03-25)
 - `--max-length`: Maximum audio segment length (seconds, default 300)
 - `--silence-length`: Minimum length for silence detection (milliseconds, default 500)
 - `--silence-threshold`: Silence detection threshold (dB, default -40)
@@ -139,6 +140,7 @@ python process_audio.py speech.mp3 --api-key YOUR_API_KEY --output-dir ./output_
 - `combine_transcripts.py`: Subtitle merging module
 - `process_audio.py`: Main processing workflow coordination module
 - `audio_processor_gui.py`: Graphical user interface module
+- `verify_durations.py`: Utility script to verify audio chunk durations (for debugging)
 
 ## Notes
 
@@ -213,5 +215,7 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 
 - [ ] Improve recognition when there are multiple people speaking.
 - [ ] Anti-degenerecy when repeated word is used in the speech
-- [ ] API error handling with retrial
+- [x] API error handling with retrial
 - [ ] Parallel use of API? No need to provide context for different chunks it seems.
+- [x] Allow selection of different Gemini models (e.g., Pro vs Flash)
+- [ ] Imrpove prompt for 2.0 flassh model to work

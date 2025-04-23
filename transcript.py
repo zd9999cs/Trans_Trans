@@ -11,6 +11,7 @@ AUDIO_DIR = "temp_audio_chunks_new_api" # 默认音频目录
 INTERMEDIATE_DIR = "intermediate_transcripts" # 默认中间转录文件目录
 MAX_RETRIES = 3 # 最大重试次数
 INITIAL_DELAY = 1 # 初始延迟秒数
+DEFAULT_MODEL = "gemini-2.5-pro-preview-03-25" # 默认模型
 # -------------
 
 # --- 系统指令 ---
@@ -48,7 +49,7 @@ def initialize_genai_client(api_key):
         print(f"初始化 GenAI 客户端时出错: {e}")
         return None
 
-def process_audio_file(filepath, client, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION):
+def process_audio_file(filepath, client, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, model_name=DEFAULT_MODEL):
     """处理单个音频文件：上传、转录、删除，并保存中间转录文件，增加重试逻辑。"""
     filename = os.path.basename(filepath)
     transcript_filename = pathlib.Path(filename).stem + ".txt"
@@ -91,9 +92,9 @@ def process_audio_file(filepath, client, intermediate_dir, system_instruction=SY
         # --- 内容生成重试逻辑 ---
         for attempt in range(MAX_RETRIES):
             try:
-                print(f"  请求转录 (尝试 {attempt + 1}/{MAX_RETRIES}): {filename}")
+                print(f"  请求转录 (尝试 {attempt + 1}/{MAX_RETRIES}, 模型: {model_name}): {filename}")
                 response = client.models.generate_content(
-                    model="gemini-2.5-pro-preview-03-25",
+                    model=model_name, # 使用传入的模型名称
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                     ),
@@ -187,7 +188,7 @@ def process_audio_file(filepath, client, intermediate_dir, system_instruction=SY
         print(f"文件 {filename} 未能上传，跳过后续处理。")
         return "" # 确保返回空字符串
 
-def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, progress_queue=None):
+def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, model_name=DEFAULT_MODEL, progress_queue=None):
     """处理一个目录中的所有音频文件，生成转录文本"""
     # 初始化客户端
     client = initialize_genai_client(api_key)
@@ -244,7 +245,7 @@ def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=S
         status_msg = f"处理文件 {i+1}/{len(audio_files)}: {os.path.basename(audio_file_path)}"
         if progress_queue:
             progress_queue.put(status_msg)
-        result = process_audio_file(audio_file_path, client, intermediate_dir, system_instruction)
+        result = process_audio_file(audio_file_path, client, intermediate_dir, system_instruction, model_name) # 传递 model_name
         results.append(result)
 
     end_time = time.time()
@@ -265,10 +266,11 @@ if __name__ == "__main__":
     parser.add_argument("--intermediate-dir", default=INTERMEDIATE_DIR, help=f"中间转录文件目录 (默认: {INTERMEDIATE_DIR})")
     parser.add_argument("--target-language", default="Simplified Chinese", 
                       help="翻译的目标语言 (默认: Simplified Chinese，可选: Traditional Chinese, English, Japanese, Korean, 等)")
-    
+    parser.add_argument("--model-name", default=DEFAULT_MODEL, help=f"使用的 Gemini 模型名称 (默认: {DEFAULT_MODEL})")
+
     args = parser.parse_args()
-    
+
     # 根据目标语言生成系统指令
     system_instruction = get_system_instruction(args.target_language)
-    
-    run_transcription(args.api_key, args.audio_dir, args.intermediate_dir, system_instruction)
+
+    run_transcription(args.api_key, args.audio_dir, args.intermediate_dir, system_instruction, args.model_name) # 传递 model_name

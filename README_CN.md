@@ -106,6 +106,7 @@ python process_audio.py 演讲.mp3 --api-key YOUR_API_KEY --output-dir ./输出�
   - `transcript`：仅包含转录
   - `translation`：仅包含翻译
   - `both`：同时包含转录和翻译 (默认)
+- `--model-name`：用于转录的 Gemini 模型 (默认: gemini-2.5-pro-preview-03-25)
 - `--max-length`：最大音频片段长度 (秒，默认 300)
 - `--silence-length`：静音检测的最小长度 (毫秒，默认 500)
 - `--silence-threshold`：静音检测阈值 (dB，默认 -40)
@@ -139,6 +140,7 @@ python process_audio.py 演讲.mp3 --api-key YOUR_API_KEY --output-dir ./输出�
 - `combine_transcripts.py`：字幕合并模块
 - `process_audio.py`：主处理流程协调模块
 - `audio_processor_gui.py`：图形用户界面模块
+- `verify_durations.py`：用于验证音频块时长的工具脚本 (调试用)
 
 ## 注意事项
 
@@ -213,5 +215,7 @@ SOFTWARE.
 
 - [ ] 改进多人说话时的识别效果。
 - [ ] 处理语音中重复词语的反退化问题。
-- [ ] 带重试机制的 API 错误处理。
+- [x] 带重试机制的 API 错误处理。
 - [ ] 并行使用 API？似乎不需要为不同区块提供上下文。
+- [x] 允许选择不同的 Gemini 模型 (例如 Pro vs Flash)
+- [ ] 改进提示词，使2.0flash模型可以使用
