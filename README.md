@@ -218,4 +218,4 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 - [x] API error handling with retrial
 - [ ] Parallel use of API? No need to provide context for different chunks it seems.
 - [x] Allow selection of different Gemini models (e.g., Pro vs Flash)
-- [ ] Imrpove prompt for 2.0 flassh model to work
+- [ ] Imrpove prompt for 2.0 flash model to work
