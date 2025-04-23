@@ -213,9 +213,9 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 
 ## TODO
 
-- [ ] Improve recognition when there are multiple people speaking.
-- [ ] Anti-degenerecy when repeated word is used in the speech
-- [x] API error handling with retrial
-- [ ] Parallel use of API? No need to provide context for different chunks it seems.
-- [x] Allow selection of different Gemini models (e.g., Pro vs Flash)
-- [ ] Imrpove prompt for 2.0 flash model to work
+- [ ] Improve recognition when multiple people are speaking, with possible speaker role identification
+- [ ] Address potential degradation issues when repetitive words appear in speech
+- [x] Add API error handling with retry mechanism
+- [ ] Allow selection between single conversation mode and multiple conversation mode (faster processing but loses context)
+- [x] Allow selection of different Gemini models (e.g., 2.5Pro and 2.5Flash)
+- [ ] Improve prompts to make the 2.0flash model usable
