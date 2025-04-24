@@ -14,7 +14,7 @@ from datetime import datetime
 # 导入我们修改过的三个脚本中的函数
 try:
     from split_audio import split_audio
-    from transcript import run_transcription
+    from transcript import run_transcription, DEFAULT_MAX_WORKERS
     from combine_transcripts import generate_srt
 except ImportError as e:
     print(f"错误：无法导入脚本模块。确保split_audio.py, transcript.py和combine_transcripts.py在同一目录下。详细错误: {e}")
@@ -134,7 +134,11 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
     silence_threshold = params.get('silence_threshold', -40)  # 默认-40dB
     cleanup = params.get('cleanup', False)
     target_language = params.get('target_language', 'Simplified Chinese')  # 默认简体中文
-    model_name = params.get('model_name', 'gemini-2.5-pro-preview-03-25') # 新增：获取模型名称，默认使用2.5pro
+    model_name = params.get('model_name', 'gemini-1.5-flash') # 更新默认模型为更快的版本
+    skip_split = params.get('skip_split', False)  # 新增：是否跳过切分音频步骤
+    audio_chunks_dir = params.get('audio_chunks_dir', None)  # 新增：自定义音频切片目录
+    max_workers = params.get('max_workers', DEFAULT_MAX_WORKERS)  # 新增：最大并行请求数
+    skip_existing = params.get('skip_existing', True)  # 新增：断点续传，是否跳过已存在的转录文件
 
     # 验证必要参数
     if not input_file or not os.path.isfile(input_file):
@@ -193,45 +197,89 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
         print(success_msg)
     
     # 设置子目录
-    audio_chunk_dir = os.path.join(output_dir, "audio_chunks")
+    # 如果指定了自定义音频切片目录并且跳过切分步骤，则使用自定义目录
+    if skip_split and audio_chunks_dir and os.path.isdir(audio_chunks_dir):
+        audio_chunk_dir = audio_chunks_dir
+        info_msg = f"跳过音频切分，使用现有音频切片目录: {audio_chunk_dir}"
+        if progress_queue:
+            progress_queue.put(info_msg)
+        print(info_msg)
+    else:
+        audio_chunk_dir = os.path.join(output_dir, "audio_chunks")
+
     intermediate_dir = os.path.join(output_dir, "intermediate_transcripts")
     srt_file = os.path.join(output_dir, f"{input_path.stem}.srt")
     
-    # 1. 切分音频
-    start_msg = f"\n--- 步骤 1: 切分音频 (最大长度: {max_length}秒, 静音长度: {silence_length}毫秒, 静音阈值: {silence_threshold}dB) ---"
-    if progress_queue:
-        progress_queue.put(start_msg)
-    print(start_msg)
-    
-    step1_start = time.time()
-    try:
-        # 调用split_audio函数，注意单位转换（秒到毫秒）
-        chunk_files = split_audio(
-            input_audio, 
-            audio_chunk_dir, 
-            max_chunk_length=max_length * 1000,  # 转为毫秒
-            min_silence_len=silence_length,
-            silence_thresh=silence_threshold
-        )
+    # 1. 切分音频（根据skip_split参数决定是否执行）
+    chunk_files = []
+    if not skip_split:
+        start_msg = f"\n--- 步骤 1: 切分音频 (最大长度: {max_length}秒, 静音长度: {silence_length}毫秒, 静音阈值: {silence_threshold}dB) ---"
+        if progress_queue:
+            progress_queue.put(start_msg)
+        print(start_msg)
         
-        if not chunk_files or len(chunk_files) == 0:
-            error_msg = "错误：音频切分失败，未生成音频片段。"
+        step1_start = time.time()
+        try:
+            # 调用split_audio函数，注意单位转换（秒到毫秒）
+            chunk_files = split_audio(
+                input_audio, 
+                audio_chunk_dir, 
+                max_chunk_length=max_length * 1000,  # 转为毫秒
+                min_silence_len=silence_length,
+                silence_thresh=silence_threshold
+            )
+            
+            if not chunk_files or len(chunk_files) == 0:
+                error_msg = "错误：音频切分失败，未生成音频片段。"
+                if progress_queue:
+                    progress_queue.put(error_msg)
+                print(error_msg)
+                return False
+                
+            step1_end = time.time()
+            success_msg = f"音频切分完成，生成了 {len(chunk_files)} 个音频片段。耗时: {step1_end - step1_start:.2f}秒"
+            if progress_queue:
+                progress_queue.put(success_msg)
+            print(success_msg)
+        except Exception as e:
+            error_msg = f"音频切分过程中发生错误: {e}"
             if progress_queue:
                 progress_queue.put(error_msg)
             print(error_msg)
             return False
+    else:
+        # 如果跳过切分步骤，检查指定的音频切片目录中是否有音频文件
+        try:
+            if not os.path.exists(audio_chunk_dir):
+                error_msg = f"错误：指定的音频切片目录 '{audio_chunk_dir}' 不存在。"
+                if progress_queue:
+                    progress_queue.put(error_msg)
+                print(error_msg)
+                return False
             
-        step1_end = time.time()
-        success_msg = f"音频切分完成，生成了 {len(chunk_files)} 个音频片段。耗时: {step1_end - step1_start:.2f}秒"
-        if progress_queue:
-            progress_queue.put(success_msg)
-        print(success_msg)
-    except Exception as e:
-        error_msg = f"音频切分过程中发生错误: {e}"
-        if progress_queue:
-            progress_queue.put(error_msg)
-        print(error_msg)
-        return False
+            chunk_files = sorted([
+                os.path.join(audio_chunk_dir, f)
+                for f in os.listdir(audio_chunk_dir)
+                if f.endswith(".mp3")
+            ])
+            
+            if not chunk_files:
+                error_msg = f"错误：在指定的音频切片目录 '{audio_chunk_dir}' 中未找到任何MP3文件。"
+                if progress_queue:
+                    progress_queue.put(error_msg)
+                print(error_msg)
+                return False
+            
+            info_msg = f"发现 {len(chunk_files)} 个现有音频切片，将直接使用。"
+            if progress_queue:
+                progress_queue.put(info_msg)
+            print(info_msg)
+        except Exception as e:
+            error_msg = f"检查指定的音频切片目录时发生错误: {e}"
+            if progress_queue:
+                progress_queue.put(error_msg)
+            print(error_msg)
+            return False
     
     # 2. 转录音频
     start_msg = f"\n--- 步骤 2: 转录音频片段 (目标语言: {target_language}, 模型: {model_name}) ---" # 更新日志信息
@@ -252,7 +300,9 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
             intermediate_dir=intermediate_dir,
             system_instruction=custom_system_instruction,
             model_name=model_name, # 传递模型名称
-            progress_queue=progress_queue
+            progress_queue=progress_queue,
+            max_workers=max_workers, # 传递并行处理数
+            skip_existing=skip_existing # 新增：传递断点续传参数
         )
         
         if not transcription_success:
@@ -382,7 +432,14 @@ def run_pipeline(params, progress_queue=None, control_queue=None):
         print(cleanup_msg)
         
         try:
-            shutil.rmtree(audio_chunk_dir)
+            # 如果是自定义的音频切片目录且跳过切分步骤，则不删除音频切片目录
+            if not (skip_split and audio_chunks_dir and audio_chunk_dir == audio_chunks_dir):
+                shutil.rmtree(audio_chunk_dir)
+                cleanup_msg = f"删除了音频切片目录: {audio_chunk_dir}"
+                if progress_queue:
+                    progress_queue.put(cleanup_msg)
+                print(cleanup_msg)
+            
             shutil.rmtree(intermediate_dir)
             
             # 如果输入是视频文件，且转换后的MP3不是原始输入，则删除转换的MP3文件
@@ -447,8 +504,22 @@ def main():
                       help="第一个音频块的手动时间偏移(秒) (默认: 0.0)")
     
     # 新增：模型选择参数
-    parser.add_argument("--model-name", default="gemini-1.5-flash",
-                      help="使用的 Gemini 模型名称 (默认: gemini-1.5-flash)")
+    parser.add_argument("--model-name", default="gemini-2.0-flash",
+                      help="使用的 Gemini 模型名称 (默认: gemini-2.0-flash)")
+
+    # 新增：跳过音频切分选项
+    parser.add_argument("--skip-split", action="store_true",
+                      help="跳过音频切分步骤，直接使用现有的音频片段")
+    parser.add_argument("--audio-chunks-dir",
+                      help="指定现有的音频片段目录 (仅在--skip-split启用时有效)")
+
+    # 新增：并行处理参数
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
+                      help=f"转录时最大并行请求数 (默认: {DEFAULT_MAX_WORKERS})。注意API速率限制。")
+    
+    # 新增：断点续传参数
+    parser.add_argument("--no-skip-existing", action="store_false", dest="skip_existing",
+                      help="禁用断点续传功能，不跳过已有的中间转录文件")
 
     # 其他选项
     parser.add_argument("--cleanup", action="store_true",

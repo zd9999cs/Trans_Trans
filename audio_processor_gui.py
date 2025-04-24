@@ -17,7 +17,7 @@ from datetime import datetime
 
 # 导入主调用脚本中的处理函数和视频检测函数
 try:
-    from process_audio import run_pipeline, is_video_file
+    from process_audio import run_pipeline, is_video_file, DEFAULT_MAX_WORKERS
 except ImportError as e:
     print(f"错误：无法导入process_audio.py模块。确保该文件在同一目录下。详细错误: {e}")
     sys.exit(1)
@@ -144,7 +144,11 @@ class AudioProcessorGUI(tk.Tk):
         self.silence_threshold = tk.IntVar(value=-40)
         self.first_chunk_offset = tk.DoubleVar(value=0.0)
         self.cleanup = tk.BooleanVar(value=False)
-        self.model_name = tk.StringVar(value="gemini-2.5-pro-preview-03-25") # 新增：模型名称变量
+        self.model_name = tk.StringVar(value="gemini-1.5-flash") # 更新默认模型为更快的版本
+        self.skip_split = tk.BooleanVar(value=False)  # 新增：是否跳过切分音频步骤
+        self.audio_chunks_dir = tk.StringVar()  # 新增：现有音频切片目录
+        self.max_workers = tk.IntVar(value=DEFAULT_MAX_WORKERS)  # 新增：最大并行请求数
+        self.skip_existing = tk.BooleanVar(value=True)  # 新增：断点续传功能，默认启用
 
         # 存储当前处理状态
         self.processing = False
@@ -281,37 +285,80 @@ class AudioProcessorGUI(tk.Tk):
         model_combo.current(0) # 默认选择 flash
         model_combo.grid(row=1, column=3, sticky=tk.W, pady=5)
         self.ui_elements["model_combo"] = model_combo
+        
+        # 新增：并行处理设置
+        parallel_label = ttk.Label(params_frame, text="并行请求数:")
+        parallel_label.grid(row=2, column=2, sticky=tk.W, pady=5, padx=(10, 0))
+        self.ui_elements["parallel_label"] = parallel_label
+        
+        parallel_spinbox = ttk.Spinbox(params_frame, from_=1, to=20, increment=1, textvariable=self.max_workers, width=5)
+        parallel_spinbox.grid(row=2, column=3, sticky=tk.W, pady=5)
+        self.ui_elements["parallel_spinbox"] = parallel_spinbox
 
         # 音频切分参数
         max_length_label = ttk.Label(params_frame, text=translations[self.current_language.get()]["max_length"])
-        max_length_label.grid(row=2, column=0, sticky=tk.W, pady=5)
+        max_length_label.grid(row=3, column=0, sticky=tk.W, pady=5)
         self.ui_elements["max_length_label"] = max_length_label
         
-        ttk.Spinbox(params_frame, from_=60, to=900, increment=30, textvariable=self.max_length, width=5).grid(row=2, column=1, sticky=tk.W, pady=5)
+        ttk.Spinbox(params_frame, from_=60, to=900, increment=30, textvariable=self.max_length, width=5).grid(row=3, column=1, sticky=tk.W, pady=5)
         
         silence_length_label = ttk.Label(params_frame, text=translations[self.current_language.get()]["silence_length"])
-        silence_length_label.grid(row=3, column=0, sticky=tk.W, pady=5)
+        silence_length_label.grid(row=4, column=0, sticky=tk.W, pady=5)
         self.ui_elements["silence_length_label"] = silence_length_label
         
-        ttk.Spinbox(params_frame, from_=100, to=2000, increment=100, textvariable=self.silence_length, width=5).grid(row=3, column=1, sticky=tk.W, pady=5)
+        ttk.Spinbox(params_frame, from_=100, to=2000, increment=100, textvariable=self.silence_length, width=5).grid(row=4, column=1, sticky=tk.W, pady=5)
         
         silence_threshold_label = ttk.Label(params_frame, text=translations[self.current_language.get()]["silence_threshold"])
-        silence_threshold_label.grid(row=4, column=0, sticky=tk.W, pady=5)
+        silence_threshold_label.grid(row=5, column=0, sticky=tk.W, pady=5)
         self.ui_elements["silence_threshold_label"] = silence_threshold_label
         
-        ttk.Spinbox(params_frame, from_=-60, to=-20, increment=5, textvariable=self.silence_threshold, width=5).grid(row=4, column=1, sticky=tk.W, pady=5)
+        ttk.Spinbox(params_frame, from_=-60, to=-20, increment=5, textvariable=self.silence_threshold, width=5).grid(row=5, column=1, sticky=tk.W, pady=5)
         
         # 字幕参数
         first_chunk_offset_label = ttk.Label(params_frame, text=translations[self.current_language.get()]["first_chunk_offset"])
-        first_chunk_offset_label.grid(row=5, column=0, sticky=tk.W, pady=5)
+        first_chunk_offset_label.grid(row=6, column=0, sticky=tk.W, pady=5)
         self.ui_elements["first_chunk_offset_label"] = first_chunk_offset_label
         
-        ttk.Spinbox(params_frame, from_=-5.0, to=5.0, increment=0.1, textvariable=self.first_chunk_offset, width=5).grid(row=5, column=1, sticky=tk.W, pady=5)
+        ttk.Spinbox(params_frame, from_=-5.0, to=5.0, increment=0.1, textvariable=self.first_chunk_offset, width=5).grid(row=6, column=1, sticky=tk.W, pady=5)
+        
+        # 新增：断点续传选项
+        skip_existing_checkbox = ttk.Checkbutton(params_frame, text="断点续传 (跳过已存在的转录文件)", variable=self.skip_existing)
+        skip_existing_checkbox.grid(row=7, column=2, columnspan=2, sticky=tk.W, pady=5)
+        self.ui_elements["skip_existing_checkbox"] = skip_existing_checkbox
         
         # 清理选项
         cleanup_checkbox = ttk.Checkbutton(params_frame, text=translations[self.current_language.get()]["cleanup"], variable=self.cleanup)
-        cleanup_checkbox.grid(row=6, column=0, columnspan=3, sticky=tk.W, pady=5)
+        cleanup_checkbox.grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=5)
         self.ui_elements["cleanup_checkbox"] = cleanup_checkbox
+        
+        # 新增：跳过音频切分选项
+        skip_split_frame = ttk.Frame(params_frame)
+        skip_split_frame.grid(row=8, column=0, columnspan=4, sticky=tk.W, pady=5)
+        
+        skip_split_checkbox = ttk.Checkbutton(skip_split_frame, text="跳过音频切分", variable=self.skip_split, command=self.toggle_audio_chunks_controls)
+        skip_split_checkbox.grid(row=0, column=0, sticky=tk.W)
+        self.ui_elements["skip_split_checkbox"] = skip_split_checkbox
+        
+        # 音频切片目录选择
+        audio_chunks_dir_label = ttk.Label(skip_split_frame, text="音频切片目录:")
+        audio_chunks_dir_label.grid(row=0, column=1, sticky=tk.W, padx=(20, 5))
+        self.ui_elements["audio_chunks_dir_label"] = audio_chunks_dir_label
+        
+        audio_chunks_dir_entry = ttk.Entry(skip_split_frame, textvariable=self.audio_chunks_dir, width=30)
+        audio_chunks_dir_entry.grid(row=0, column=2, sticky=tk.W, padx=5)
+        self.ui_elements["audio_chunks_dir_entry"] = audio_chunks_dir_entry
+        
+        browse_chunks_btn = ttk.Button(skip_split_frame, text="浏览...", command=self.browse_audio_chunks_dir)
+        browse_chunks_btn.grid(row=0, column=3, sticky=tk.W)
+        self.ui_elements["browse_chunks_btn"] = browse_chunks_btn
+        
+        # 新增：使用默认音频切片目录按钮
+        use_default_chunks_btn = ttk.Button(skip_split_frame, text="使用默认目录", command=self.use_default_audio_chunks_dir)
+        use_default_chunks_btn.grid(row=0, column=4, sticky=tk.W, padx=5)
+        self.ui_elements["use_default_chunks_btn"] = use_default_chunks_btn
+        
+        # 默认禁用音频切片目录选择控件
+        self.toggle_audio_chunks_controls()
         
         # 创建按钮框架
         button_frame = ttk.Frame(main_frame)
@@ -420,6 +467,22 @@ class AudioProcessorGUI(tk.Tk):
             messagebox.showerror(translations[self.current_language.get()]["error"], translations[self.current_language.get()]["error_no_api_key"])
             return
         
+        # 检查跳过切分音频时是否指定了音频切片目录
+        if self.skip_split.get() and not self.audio_chunks_dir.get():
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                "错误: 已选择跳过切分音频，但未指定音频切片目录。"
+            )
+            return
+        
+        # 如果指定了音频切片目录，检查目录是否存在
+        if self.skip_split.get() and not os.path.isdir(self.audio_chunks_dir.get()):
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                f"错误: 指定的音频切片目录 '{self.audio_chunks_dir.get()}' 不存在。"
+            )
+            return
+        
         # 确认处理
         if not messagebox.askyesno(translations[self.current_language.get()]["confirm_start"], translations[self.current_language.get()]["confirm_start_message"]):
             return
@@ -444,7 +507,10 @@ class AudioProcessorGUI(tk.Tk):
             'silence_threshold': self.silence_threshold.get(),
             'first_chunk_offset': self.first_chunk_offset.get(),
             'cleanup': self.cleanup.get(),
-            'model_name': self.model_name.get() # 新增：传递模型名称
+            'model_name': self.model_name.get(), # 传递模型名称
+            'skip_split': self.skip_split.get(), # 新增：是否跳过切分音频
+            'audio_chunks_dir': self.audio_chunks_dir.get() if self.skip_split.get() else None, # 新增：音频切片目录
+            'max_workers': self.max_workers.get() # 新增：传递并行处理数量
         }
         
         # 更新UI状态
@@ -802,6 +868,56 @@ class AudioProcessorGUI(tk.Tk):
                 translations[self.current_language.get()]["complete"], 
                 translations[self.current_language.get()]["complete_message"].format(output_dir=self.output_dir_path.get())
             )
+    
+    def toggle_audio_chunks_controls(self):
+        """根据是否跳过音频切分选项，启用或禁用音频切片目录控件"""
+        if self.skip_split.get():
+            # 启用音频切片目录控件
+            self.ui_elements["audio_chunks_dir_entry"].config(state="normal")
+            self.ui_elements["browse_chunks_btn"].config(state="normal")
+            self.ui_elements["audio_chunks_dir_label"].config(state="normal")
+        else:
+            # 禁用音频切片目录控件
+            self.ui_elements["audio_chunks_dir_entry"].config(state="disabled")
+            self.ui_elements["browse_chunks_btn"].config(state="disabled")
+            self.ui_elements["audio_chunks_dir_label"].config(state="disabled")
+            
+    def browse_audio_chunks_dir(self):
+        """打开文件浏览器选择现有的音频切片目录"""
+        dirpath = filedialog.askdirectory(
+            title="选择现有的音频切片目录"
+        )
+        
+        if dirpath:
+            self.audio_chunks_dir.set(dirpath)
+    
+    def use_default_audio_chunks_dir(self):
+        """使用默认音频切片目录（与输入文件同名的目录下的audio_chunks）"""
+        # 检查是否已选择输入文件
+        if not self.input_file_path.get():
+            messagebox.showerror(
+                translations[self.current_language.get()]["error"],
+                "请先选择输入文件，才能使用默认音频切片目录"
+            )
+            return
+            
+        # 计算默认的音频切片目录路径
+        input_path = pathlib.Path(self.input_file_path.get())
+        default_output_dir = os.path.join(input_path.parent, input_path.stem)
+        default_chunks_dir = os.path.join(default_output_dir, "audio_chunks")
+        
+        # 检查默认目录是否存在
+        if not os.path.exists(default_chunks_dir):
+            result = messagebox.askyesno(
+                "目录不存在",
+                f"默认音频切片目录 '{default_chunks_dir}' 不存在。\n是否仍要使用此路径？"
+            )
+            if not result:
+                return
+        
+        # 设置音频切片目录
+        self.audio_chunks_dir.set(default_chunks_dir)
+        self.add_progress(f"已设置默认音频切片目录: {default_chunks_dir}")
 
 if __name__ == "__main__":
     app = AudioProcessorGUI()

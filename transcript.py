@@ -4,6 +4,9 @@ import time
 import pathlib
 from google.genai import types
 import random # 导入 random 用于增加抖动
+import concurrent.futures # 导入并行处理库
+import threading # 导入线程库，用于线程安全操作
+from google.genai import errors
 
 # --- 配置 ---
 API_KEY = "YOUR_API_KEY_HERE" # 默认API密钥，建议通过参数传入而非硬编码
@@ -11,7 +14,8 @@ AUDIO_DIR = "temp_audio_chunks_new_api" # 默认音频目录
 INTERMEDIATE_DIR = "intermediate_transcripts" # 默认中间转录文件目录
 MAX_RETRIES = 3 # 最大重试次数
 INITIAL_DELAY = 1 # 初始延迟秒数
-DEFAULT_MODEL = "gemini-2.5-pro-preview-03-25" # 默认模型
+DEFAULT_MODEL = "gemini-2.0-flash" # 更新默认模型为更快的版本
+DEFAULT_MAX_WORKERS = 4 # 新增：默认并行工作线程数
 # -------------
 
 # --- 系统指令 ---
@@ -117,7 +121,7 @@ def process_audio_file(filepath, client, intermediate_dir, system_instruction=SY
                    "500 internal server error" in error_str or \
                    "503 service unavailable" in error_str or \
                    "504 gateway timeout" in error_str or \
-                   isinstance(e, types.generation_types.StopCandidateException):
+                   True: # Placeholder for other retryable errors
                     if attempt < MAX_RETRIES - 1:
                         delay = (INITIAL_DELAY * (2 ** attempt)) + random.uniform(0, 1)
                         print(f"  检测到可重试错误，将在 {delay:.2f} 秒后重试转录...")
@@ -188,8 +192,22 @@ def process_audio_file(filepath, client, intermediate_dir, system_instruction=SY
         print(f"文件 {filename} 未能上传，跳过后续处理。")
         return "" # 确保返回空字符串
 
-def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, model_name=DEFAULT_MODEL, progress_queue=None):
-    """处理一个目录中的所有音频文件，生成转录文本"""
+def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=SYSTEM_INSTRUCTION, model_name=DEFAULT_MODEL, progress_queue=None, max_workers=DEFAULT_MAX_WORKERS, skip_existing=True):
+    """处理一个目录中的所有音频文件，生成转录文本，支持并行处理
+    
+    Args:
+        api_key: Google AI API密钥
+        audio_dir: 音频文件目录
+        intermediate_dir: 中间转录文件保存目录
+        system_instruction: 系统指令
+        model_name: 使用的模型名称
+        progress_queue: 进度队列
+        max_workers: 最大并行处理线程数
+        skip_existing: 是否跳过已存在的转录文件（断点续传）
+    
+    Returns:
+        bool: 操作是否成功
+    """
     # 初始化客户端
     client = initialize_genai_client(api_key)
     if not client:
@@ -233,27 +251,150 @@ def run_transcription(api_key, audio_dir, intermediate_dir, system_instruction=S
         print(error_msg)
         return False
 
-    status_msg = f"找到 {len(audio_files)} 个音频文件，将按顺序处理..."
-    if progress_queue:
-        progress_queue.put(status_msg)
-    print(status_msg)
+    # 创建线程安全的计数器和锁
+    processed_count = 0
+    success_count = 0
+    skipped_count = 0  # 新增：跳过的文件计数
+    count_lock = threading.Lock()
+    
+    # 用于安全更新进度的函数
+    def update_progress(message):
+        if progress_queue:
+            progress_queue.put(message)
+        print(message)
+    
+    # 新增：检查文件是否有效
+    def is_valid_transcript_file(filepath):
+        """检查转录文件是否有效（非空且不包含错误标记）"""
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            return False
+            
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                first_line = f.readline().lower()
+                # 如果文件第一行包含错误或警告标记，则视为无效
+                if ("error" in first_line or "warning" in first_line):
+                    return False
+                # 简单检查文件是否包含所需内容（至少含有转录和翻译部分）
+                file_content = f.read().lower()
+                has_transcript = "transcript:" in file_content
+                has_translation = "translation:" in file_content
+                return has_transcript and has_translation
+        except Exception:
+            return False
+    
+    # 包装处理函数，管理计数和进度更新
+    def process_file_with_progress(filepath):
+        nonlocal processed_count, success_count, skipped_count
+        filename = os.path.basename(filepath)
+        transcript_filename = pathlib.Path(filename).stem + ".txt"
+        intermediate_filepath = os.path.join(intermediate_dir, transcript_filename)
+        
+        # 新增：检查是否存在有效的转录文件，如果存在且设置了跳过，则跳过处理
+        if skip_existing and is_valid_transcript_file(intermediate_filepath):
+            with count_lock:
+                processed_count += 1
+                skipped_count += 1
+                success_count += 1
+                current_count = processed_count
+                
+            update_progress(f"({current_count}/{len(audio_files)}) 跳过已存在的转录: {filename}")
+            return "SKIPPED"
+        
+        # 处理文件
+        try:
+            result = process_audio_file(filepath, client, intermediate_dir, system_instruction, model_name)
+            
+            # 更新计数
+            with count_lock:
+                processed_count += 1
+                current_count = processed_count  # 复制当前值以在锁外使用
+                
+                # 检查是否有有效的转录结果
+                if os.path.exists(intermediate_filepath) and os.path.getsize(intermediate_filepath) > 0:
+                    # 检查文件内容是否包含错误标记
+                    try:
+                        with open(intermediate_filepath, 'r', encoding='utf-8') as f_check:
+                            first_line = f_check.readline().lower()
+                            if "error" not in first_line and "warning" not in first_line:
+                                success_count += 1
+                                status_msg = f"({current_count}/{len(audio_files)}) 成功处理: {filename}"
+                            else:
+                                status_msg = f"({current_count}/{len(audio_files)}) 处理完成但有警告/错误: {filename}"
+                    except Exception:
+                        status_msg = f"({current_count}/{len(audio_files)}) 处理完成但无法验证结果: {filename}"
+                else:
+                    status_msg = f"({current_count}/{len(audio_files)}) 处理完成但未生成有效转录: {filename}"
+            
+            # 更新进度（在锁外执行，避免阻塞其他线程）
+            update_progress(status_msg)
+            return result
+            
+        except Exception as e:
+            # 处理异常
+            with count_lock:
+                processed_count += 1
+                current_count = processed_count
+            error_msg = f"({current_count}/{len(audio_files)}) 处理 {filename} 时发生错误: {e}"
+            update_progress(error_msg)
+            return ""
 
-    # 按顺序处理文件
+    # 根据文件数调整工作线程数，避免创建过多线程
+    actual_workers = min(max_workers, len(audio_files))
+    if actual_workers < max_workers:
+        update_progress(f"文件数量为 {len(audio_files)}，调整并行数为 {actual_workers}")
+    else:
+        update_progress(f"开始处理 {len(audio_files)} 个音频文件，使用 {actual_workers} 个并行请求...")
+    
+    # 如果启用了跳过功能，报告可能跳过的文件
+    if skip_existing:
+        existing_files = sum(1 for f in audio_files if is_valid_transcript_file(
+            os.path.join(intermediate_dir, pathlib.Path(os.path.basename(f)).stem + ".txt")))
+        if existing_files > 0:
+            update_progress(f"检测到 {existing_files} 个有效的现有转录文件，将被跳过处理。")
+
+    # 开始计时
     start_time = time.time()
     results = []
-    for i, audio_file_path in enumerate(audio_files):
-        status_msg = f"处理文件 {i+1}/{len(audio_files)}: {os.path.basename(audio_file_path)}"
-        if progress_queue:
-            progress_queue.put(status_msg)
-        result = process_audio_file(audio_file_path, client, intermediate_dir, system_instruction, model_name) # 传递 model_name
-        results.append(result)
 
+    # 使用线程池进行并行处理
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
+            # 提交所有任务
+            future_to_filepath = {
+                executor.submit(process_file_with_progress, filepath): filepath
+                for filepath in audio_files
+            }
+            
+            # 按完成顺序收集结果
+            for future in concurrent.futures.as_completed(future_to_filepath):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as exc:
+                    # 这里捕获的是submit过程中的异常，而不是任务执行中的异常
+                    # 任务执行中的异常应该在process_file_with_progress中处理
+                    filepath = future_to_filepath[future]
+                    error_msg = f"提交任务 {os.path.basename(filepath)} 时发生意外错误: {exc}"
+                    update_progress(error_msg)
+    except Exception as e:
+        # 处理线程池本身的异常
+        error_msg = f"并行处理过程中发生严重错误: {e}"
+        update_progress(error_msg)
+        return False
+
+    # 计算总时间
     end_time = time.time()
-    status_msg = f"所有文件处理完成，耗时: {end_time - start_time:.2f} 秒"
-    if progress_queue:
-        progress_queue.put(status_msg)
-    print(status_msg)
+    total_time = end_time - start_time
     
+    # 打印汇总信息
+    summary_msg = (f"\n转录处理完成。成功: {success_count}/{len(audio_files)} "
+                  f"(其中跳过: {skipped_count}，新处理: {success_count - skipped_count})。"
+                  f"总耗时: {total_time:.2f} 秒。")
+    update_progress(summary_msg)
+    
+    # 只要代码能运行到这里，就认为整体过程是成功的
+    # 即使部分文件可能失败，后续的合并步骤仍可以处理成功的文件
     return True
 
 # --- 主逻辑 ---
@@ -267,10 +408,20 @@ if __name__ == "__main__":
     parser.add_argument("--target-language", default="Simplified Chinese", 
                       help="翻译的目标语言 (默认: Simplified Chinese，可选: Traditional Chinese, English, Japanese, Korean, 等)")
     parser.add_argument("--model-name", default=DEFAULT_MODEL, help=f"使用的 Gemini 模型名称 (默认: {DEFAULT_MODEL})")
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
+                      help=f"最大并行请求数 (默认: {DEFAULT_MAX_WORKERS})。注意API速率限制。")
 
     args = parser.parse_args()
 
     # 根据目标语言生成系统指令
     system_instruction = get_system_instruction(args.target_language)
 
-    run_transcription(args.api_key, args.audio_dir, args.intermediate_dir, system_instruction, args.model_name) # 传递 model_name
+    # 调用run_transcription，传递所有参数
+    run_transcription(
+        api_key=args.api_key,
+        audio_dir=args.audio_dir,
+        intermediate_dir=args.intermediate_dir,
+        system_instruction=system_instruction,
+        model_name=args.model_name,
+        max_workers=args.max_workers  # 传递并行数
+    )
