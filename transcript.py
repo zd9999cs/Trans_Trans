@@ -40,6 +40,8 @@ Timestamped Transcript:
 Timestamped Translation:
 [Timestamped translation text]
 
+During transcript, repeating words should be compressed into short notes.
+
 """
 
 # 默认的系统指令使用简体中文

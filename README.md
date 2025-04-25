@@ -216,6 +216,6 @@ If you find any bugs or have any suggestions for improvements, please feel free 
 - [ ] Improve recognition when multiple people are speaking, with possible speaker role identification
 - [ ] Address potential degradation issues when repetitive words appear in speech
 - [x] Add API error handling with retry mechanism
-- [ ] Allow selection between single conversation mode and multiple conversation mode (faster processing but loses context)
+- [ ] Allow selection between single conversation mode and multiple conversation mode.
 - [x] Allow selection of different Gemini models (e.g., 2.5Pro and 2.5Flash)
 - [ ] Improve prompts to make the 2.0flash model usable
