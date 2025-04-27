@@ -62,6 +62,8 @@ venv.bak/
 *.m4a
 *.aac
 *.ogg
+*.jpg
+*.png
 
 # 处理中生成的目录
 */audio_chunks/
